@@ -1,0 +1,211 @@
+openapi: 3.0.3
+info:
+  title: API Core - Plataforma de Oficios (MVP)
+  version: 1.0.0
+  description: Contratos REST para la gestión de tickets y operarios del MVP.
+servers:
+  - url: http://localhost:8080
+    description: Servidor de Desarrollo Local
+paths:
+  /api/v1/tickets:
+    post:
+      summary: Crear una Solicitud de Servicio
+      description: Crea un nuevo ticket en estado CREADO. Requiere rol CLIENTE.
+      tags:
+        - Tickets (Cliente)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCrearRequest'
+      responses:
+        '201':
+          description: Ticket creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketCreadoResponse'
+
+  /api/v1/tickets/disponibles:
+    get:
+      summary: Listar Bolsa de Trabajo
+      description: Devuelve los tickets en estado CREADO sin asignar. Requiere rol OPERARIO.
+      tags:
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Lista de tickets disponibles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketDisponible'
+
+  /api/v1/tickets/{id}/asignar:
+    patch:
+      summary: Aceptar Trabajo (Asignación)
+      description: El operario intenta tomar el ticket. Maneja concurrencia. Requiere rol OPERARIO.
+      tags:
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket
+      responses:
+        '200':
+          description: Ticket asignado correctamente
+        '409':
+          description: Conflicto - El ticket ya fue asignado a otro operario
+
+  /api/v1/tickets/{id}/estado:
+    patch:
+      summary: Actualizar Estado del Ticket
+      description: Avanza la máquina de estados (EN_CAMINO, EN_PROGRESO).
+      tags:
+        - Tickets (Operario / Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketActualizarEstadoRequest'
+      responses:
+        '200':
+          description: Estado actualizado exitosamente
+
+  /api/v1/tickets/{id}/finalizar:
+    post:
+      summary: Registrar Evidencia y Cobro
+      description: Cierra el trabajo operativo y adjunta la foto de evidencia.
+      tags:
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketFinalizarRequest'
+      responses:
+        '200':
+          description: Trabajo finalizado
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    TicketCrearRequest:
+      type: object
+      required:
+        - servicio_id
+        - direccion
+        - descripcion_problema
+      properties:
+        servicio_id:
+          type: integer
+          example: 1
+        direccion:
+          type: string
+          example: "Av. Corrientes 1234, CABA"
+        descripcion_problema:
+          type: string
+          example: "Pérdida de agua bajo la bacha de la cocina."
+
+    TicketCreadoResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        estado:
+          type: string
+          example: "CREADO"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-12T19:00:00Z"
+
+    TicketDisponible:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        servicio:
+          type: string
+          example: "Plomería"
+        direccion:
+          type: string
+          example: "Av. Corrientes 1234, CABA"
+        descripcion_problema:
+          type: string
+        tarifa_base:
+          type: number
+          format: float
+          example: 15000.00
+        created_at:
+          type: string
+          format: date-time
+
+    TicketActualizarEstadoRequest:
+      type: object
+      required:
+        - nuevo_estado
+      properties:
+        nuevo_estado:
+          type: string
+          enum: [EN_CAMINO, EN_PROGRESO, FINALIZADO]
+          example: "EN_CAMINO"
+
+    TicketFinalizarRequest:
+      type: object
+      required:
+        - precio_final
+        - metodo_pago
+      properties:
+        precio_final:
+          type: number
+          format: float
+          example: 25000.00
+        metodo_pago:
+          type: string
+          enum: [EFECTIVO, QR, TRANSFERENCIA]
+          example: "EFECTIVO"
+        evidencia_url:
+          type: string
+          format: uri
+          example: "https://storage.midominio.com/evidencia/ticket_a1b2c3d4.jpg"
