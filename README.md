@@ -1,1 +1,1 @@
-![alt text](image.png)
+![alt text](core-service.drawio.png)
