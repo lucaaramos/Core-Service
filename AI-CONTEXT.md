@@ -1,46 +1,34 @@
-# Arquitectura y Reglas de Negocio - Core Service (MVP)
+# Contexto del Proyecto: Plataforma de Oficios (MVP)
+Nombre del Servicio: `Core-Service`
 
-## Descripción General
-Este repositorio contiene el backend (Core Service) para la plataforma de oficios y servicios (MVP). Su objetivo principal es gestionar la solicitud de servicios por parte de clientes y la asignación / ejecución de los mismos por parte de operarios calificados.
+## 1. Visión General
+Este es el backend (Monolito Modular) para una plataforma multilateral que conecta a Clientes con Operarios de oficios (plomería, electricidad, etc.). 
+El foco crítico del sistema es manejar correctamente la concurrencia y la máquina de estados de un "Ticket" de servicio.
+a
+## 2. Stack Tecnológicos
+*   **Lenguaje:** Go (Golang)
+*   **Base de Datos:** PostgreSQL
+*   **Arquitectura:** Clean Architecture + Domain-Driven Design (DDD)
+*   **Infraestructura:** Docker / Docker Compose
 
-## Estructura de Base de Datos (PostgreSQL 15)
-El modelo relacional soporta las siguientes entidades principales:
+## 3. Máquina de Estados (El Core)
+El ciclo de vida estricto de un Ticket es:
+1. `CREADO` (El cliente lo solicita).
+2. `ASIGNADO` (Un operario lo acepta. *Requiere concurrencia segura/Locks en base de datos*).
+3. `EN_CAMINO` (El operario se dirige al domicilio).
+4. `EN_PROGRESO` (El operario llegó y está trabajando).
+5. `FINALIZADO` (Trabajo terminado, precio final definido, foto adjuntada).
+6. `PAGADO` / `CANCELADO` (Estados finales).
 
-1. **users** (Usuarios de la plataforma)
-   - `id`: UUID (Primary Key, nativo de PostgreSQL `uuid_generate_v4()`)
-   - `nombre`: VARCHAR(150) NOT NULL
-   - `email`: VARCHAR(150) UNIQUE NOT NULL
-   - `password_hash`: VARCHAR(255) NOT NULL
-   - `rol`: VARCHAR(50) NOT NULL CHECK (rol IN ('CLIENTE', 'OPERARIO', 'ADMIN'))
-   - `telefono`: VARCHAR(50)
-   - `created_at`: TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-   - `updated_at`: TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+## 4. Estructura de Base de Datos (PostgreSQL)
+*   **USUARIOS:** `id` (UUID), `email`, `password_hash`, `nombre`, `telefono`, `rol` (CLIENTE, ADMIN).
+*   **OPERARIOS:** `id` (UUID), `usuario_id` (FK 1:1), `estado_disponibilidad`, `calificacion_promedio`.
+*   **SERVICIOS:** `id` (INT), `nombre`, `tarifa_base`, `activo`.
+*   **TICKETS:** `id` (UUID), `cliente_id` (FK), `operario_id` (FK, Nullable al inicio), `servicio_id` (FK), `estado`, `direccion`, `descripcion_problema`, `precio_final` (Nullable).
+*   **HISTORIAL_ESTADOS:** `id` (UUID), `ticket_id` (FK), `estado_anterior`, `estado_nuevo`, `cambiado_por` (FK), `created_at`.
+*   **PAGOS:** `id` (UUID), `ticket_id` (FK), `monto`, `metodo_pago`, `estado`.
 
-2. **services** (Catálogo de servicios ofrecidos)
-   - `id`: SERIAL (Primary Key)
-   - `nombre`: VARCHAR(100) NOT NULL UNIQUE
-   - `descripcion`: TEXT
-   - `tarifa_base`: NUMERIC(10,2) NOT NULL
-   - `created_at`: TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-
-3. **tickets** (Solicitudes de servicio / Trabajos)
-   - `id`: UUID (Primary Key, nativo de PostgreSQL `uuid_generate_v4()`)
-   - `cliente_id`: UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE
-   - `operario_id`: UUID REFERENCES users(id) ON DELETE SET NULL
-   - `servicio_id`: INTEGER NOT NULL REFERENCES services(id) ON DELETE RESTRICT
-   - `estado`: VARCHAR(50) NOT NULL DEFAULT 'CREADO' CHECK (estado IN ('CREADO', 'ASIGNADO', 'EN_CAMINO', 'EN_PROGRESO', 'FINALIZADO', 'CANCELADO'))
-   - `direccion`: TEXT NOT NULL
-   - `descripcion_problema`: TEXT NOT NULL
-   - `precio_final`: NUMERIC(10,2)
-   - `metodo_pago`: VARCHAR(50) CHECK (metodo_pago IN ('EFECTIVO', 'QR', 'TRANSFERENCIA'))
-   - `evidencia_url`: TEXT
-   - `created_at`: TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-   - `updated_at`: TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-
-## Máquina de Estados de los Tickets
-1. `CREADO`: Ticket creado por el cliente, disponible en la bolsa de trabajo para operarios.
-2. `ASIGNADO`: El operario aceptó el trabajo (mecanismo de concurrencia para evitar doble asignación).
-3. `EN_CAMINO`: El operario se dirige al domicilio.
-4. `EN_PROGRESO`: El operario comenzó el trabajo en el domicilio.
-5. `FINALIZADO`: Trabajo completado con evidencia y método de pago registrado.
-6. `CANCELADO`: Cancelado por el cliente o admin.
+## 5. Reglas de Arquitectura Estrictas
+1. Todo el código de negocio vive en `internal/` separado por dominios (ej. `internal/ticket`, `internal/user`).
+2. Capas de cada dominio: `domain` (entidades), `usecase` (lógica), `infrastructure` (SQL/DB), `delivery` (REST Handlers).
+3. No se utilizan ORMs mágicos pesados. Las consultas SQL (especialmente el manejo del estado ASIGNADO) deben ser explícitas para controlar bloqueos (Row-level locks).
