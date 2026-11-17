@@ -28,10 +28,18 @@ func main() {
 		dbUser := os.Getenv("POSTGRES_USER")
 		dbPass := os.Getenv("POSTGRES_PASSWORD")
 		dbHost := os.Getenv("POSTGRES_HOST")
+		if dbHost == "" {
+			dbHost = "localhost"
+		} // Fallback local
 		dbPort := os.Getenv("POSTGRES_PORT")
+		if dbPort == "" {
+			dbPort = "5432"
+		} // Fallback local
 		dbName := os.Getenv("POSTGRES_DB")
 
-		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", dbUser, dbPass, dbHost, dbPort, dbName)
+		// Formato correcto que entiende Go: postgres://usuario:password@host:puerto/bd?sslmode=disable
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+			dbUser, dbPass, dbHost, dbPort, dbName)
 	}
 
 	// 2. Conexión a la base de datos PostgreSQL
