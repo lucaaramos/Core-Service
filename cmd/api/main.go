@@ -26,25 +26,10 @@ func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dbUser := os.Getenv("POSTGRES_USER")
-		if dbUser == "" {
-			dbUser = "postgres"
-		}
 		dbPass := os.Getenv("POSTGRES_PASSWORD")
-		if dbPass == "" {
-			dbPass = "postgressecurepassword"
-		}
 		dbHost := os.Getenv("POSTGRES_HOST")
-		if dbHost == "" {
-			dbHost = "localhost"
-		}
 		dbPort := os.Getenv("POSTGRES_PORT")
-		if dbPort == "" {
-			dbPort = "5432"
-		}
 		dbName := os.Getenv("POSTGRES_DB")
-		if dbName == "" {
-			dbName = "core_service_db"
-		}
 
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", dbUser, dbPass, dbHost, dbPort, dbName)
 	}
