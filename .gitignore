@@ -1,0 +1,38 @@
+# Binarios y ejecutables de Go
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Archivos de entorno y sensibles
+.env
+.env.local
+.env.*.local
+
+# Docker volumes y datos locales
+docker-data/
+postgres_data/
+
+# Dependencias y directorios de caché
+vendor/
+.go/
+gomodcache/
+
+# Sistemas operativos y editores
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
