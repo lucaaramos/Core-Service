@@ -6,9 +6,14 @@ import (
 	"log"
 	"os"
 
-	delivery "core-service/internal/ticket/delivery/http"
-	"core-service/internal/ticket/infrastructure"
-	"core-service/internal/ticket/usecase"
+	authDelivery "core-service/internal/auth/delivery/http"
+	authDomain "core-service/internal/auth/domain"
+	authRepo "core-service/internal/auth/infrastructure"
+	authUsecase "core-service/internal/auth/usecase"
+	"core-service/internal/middleware"
+	ticketDelivery "core-service/internal/ticket/delivery/http"
+	ticketRepo "core-service/internal/ticket/infrastructure"
+	ticketUsecase "core-service/internal/ticket/usecase"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -17,67 +22,95 @@ import (
 )
 
 func main() {
-	// Cargar variables de entorno desde el archivo .env si existe
+	// Cargar variables de entorno desde .env si existe
 	if err := godotenv.Load(); err != nil {
-		log.Println("Aviso: No se pudo cargar el archivo .env (se usarán variables del sistema o defaults)")
+		log.Println("Aviso: no se pudo cargar .env (se usarán variables del sistema o defaults)")
 	}
 
-	// Obtener la cadena de conexión de la variable de entorno o construirla
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET no está definido en las variables de entorno")
+	}
+
+	// Cadena de conexión a PostgreSQL
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dbUser := os.Getenv("POSTGRES_USER")
-		dbPass := os.Getenv("POSTGRES_PASSWORD")
-		dbHost := os.Getenv("POSTGRES_HOST")
-		dbPort := os.Getenv("POSTGRES_PORT")
-		dbName := os.Getenv("POSTGRES_DB")
-
+		dbUser := envOr("POSTGRES_USER", "postgres")
+		dbPass := envOr("POSTGRES_PASSWORD", "postgressecurepassword")
+		dbHost := envOr("POSTGRES_HOST", "localhost")
+		dbPort := envOr("POSTGRES_PORT", "5432")
+		dbName := envOr("POSTGRES_DB", "core_service_db")
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", dbUser, dbPass, dbHost, dbPort, dbName)
 	}
 
-	// 2. Conexión a la base de datos PostgreSQL
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatalf("Error abriendo la conexión a la base de datos: %v", err)
 	}
 	defer db.Close()
 
-	// 3. Verificar que la base de datos esté viva
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Error haciendo ping a la base de datos: %v", err)
 	}
 	log.Println("Conexión exitosa a la base de datos PostgreSQL")
 
-	// 4. Inyección de Dependencias (Wiring Clean Architecture)
-	ticketRepo := infrastructure.NewPostgresTicketRepository(db)
-	ticketUC := usecase.NewTicketUsecase(ticketRepo)
+	// Wiring (Clean Architecture)
+	authRepoInstance := authRepo.NewPostgresAuthRepository(db)
+	authUC := authUsecase.NewAuthUsecase(authRepoInstance)
 
-	// 5. Inicialización de Fiber
-	app := fiber.New(fiber.Config{
-		AppName: "Core-Service API (MVP)",
-	})
+	ticketRepoInstance := ticketRepo.NewPostgresTicketRepository(db)
+	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance)
 
-	// Middleware de Logger para visualizar solicitudes HTTP en consola
+	app := fiber.New(fiber.Config{AppName: "Core-Service API (MVP)"})
 	app.Use(logger.New())
 
-	// Health check endpoint
 	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"status": "UP",
-		})
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "UP"})
 	})
 
-	// 6. Registro de Rutas API v1
 	v1 := app.Group("/api/v1")
-	delivery.NewTicketHandler(v1, ticketUC)
 
-	// 7. Arranque del servidor HTTP en el puerto configurado
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	// Rutas públicas de autenticación
+	authDelivery.NewAuthHandler(v1, authUC)
 
+	// Rutas protegidas de tickets
+	tickets := v1.Group("/tickets", middleware.JWTProtected(jwtSecret))
+	ticketHandler := ticketDelivery.NewTicketHandler(ticketUC)
+
+	// POST /tickets -> solo CLIENTE (cliente_id se toma del JWT)
+	tickets.Post("",
+		middleware.RequireRole(string(authDomain.RoleCliente)),
+		ticketHandler.CreateTicket,
+	)
+
+	// PATCH /tickets/:id/asignar -> solo OPERARIO (operario_id se toma del JWT)
+	tickets.Patch("/:id/asignar",
+		middleware.RequireRole(string(authDomain.RoleOperario)),
+		ticketHandler.AssignTicket,
+	)
+
+	// PATCH /tickets/:id/estado -> OPERARIO (o ADMIN)
+	tickets.Patch("/:id/estado",
+		middleware.RequireRole(string(authDomain.RoleOperario), string(authDomain.RoleAdmin)),
+		ticketHandler.UpdateState,
+	)
+
+	// POST /tickets/:id/finalizar -> solo OPERARIO
+	tickets.Post("/:id/finalizar",
+		middleware.RequireRole(string(authDomain.RoleOperario)),
+		ticketHandler.FinishTicket,
+	)
+
+	port := envOr("PORT", "8080")
 	log.Printf("Iniciando servidor Core-Service en el puerto %s...", port)
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatalf("Error al iniciar el servidor Fiber: %v", err)
 	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
