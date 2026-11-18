@@ -1,16 +1,124 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.0.0
-  description: Contratos REST para la gestión de tickets y operarios del MVP.
+  version: 1.1.0
+  description: |
+    Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
+
+    ### Autenticación
+    Los endpoints protegidos requieren el header `Authorization: Bearer <token>`.
+    El token JWT se obtiene en `POST /api/v1/auth/login` y contiene los claims
+    `user_id` (UUID) y `rol` (CLIENTE | OPERARIO | ADMIN), con una expiración de 24 horas.
+
+    ### Roles
+    - **CLIENTE**: crea solicitudes de servicio.
+    - **OPERARIO**: toma trabajos de la bolsa, avanza estados y finaliza con evidencia.
+    - **ADMIN**: supervisión (puede actualizar estados).
 servers:
   - url: http://localhost:8080
     description: Servidor de Desarrollo Local
+tags:
+  - name: Auth
+    description: Registro e inicio de sesión de usuarios
+  - name: Tickets (Cliente)
+    description: Endpoints disponibles para usuarios con rol CLIENTE
+  - name: Tickets (Operario)
+    description: Endpoints disponibles para usuarios con rol OPERARIO
+  - name: Tickets (Operario / Admin)
+    description: Endpoints disponibles para OPERARIO y ADMIN
 paths:
+  /api/v1/auth/register:
+    post:
+      summary: Registrar un Usuario
+      description: |
+        Crea un nuevo usuario en la plataforma y hashea la contraseña con bcrypt.
+        Solo se permite registrarse con rol **CLIENTE** u **OPERARIO** (el rol ADMIN no es público).
+        El email debe ser único.
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioRegistroRequest'
+      responses:
+        '201':
+          description: Usuario registrado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioRegistroResponse'
+        '400':
+          description: Datos inválidos o rol no permitido (solo CLIENTE u OPERARIO)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: El email ya está registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/login:
+    post:
+      summary: Iniciar Sesión
+      description: |
+        Valida las credenciales del usuario y devuelve un JWT firmado (HS256)
+        con expiración de 24 horas. El token incluye los claims `user_id` y `rol`,
+        y debe enviarse como `Authorization: Bearer <token>` en los endpoints protegidos.
+      tags:
+        - Auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioLoginRequest'
+      responses:
+        '200':
+          description: Autenticación exitosa
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioLoginResponse'
+        '400':
+          description: Cuerpo de solicitud inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Credenciales inválidas (email inexistente o contraseña incorrecta)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/tickets:
     post:
       summary: Crear una Solicitud de Servicio
-      description: Crea un nuevo ticket en estado CREADO. Requiere rol CLIENTE.
+      description: |
+        Crea un nuevo ticket en estado **CREADO**. Requiere rol **CLIENTE**.
+
+        El `cliente_id` **no** se envía en el body: se obtiene automáticamente
+        del claim `user_id` del JWT.
       tags:
         - Tickets (Cliente)
       security:
@@ -28,6 +136,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TicketCreadoResponse'
+        '400':
+          description: Cuerpo de solicitud inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol CLIENTE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/tickets/disponibles:
     get:
@@ -46,11 +178,29 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketDisponible'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/tickets/{id}/asignar:
     patch:
       summary: Aceptar Trabajo (Asignación)
-      description: El operario intenta tomar el ticket. Maneja concurrencia. Requiere rol OPERARIO.
+      description: |
+        El operario intenta tomar el ticket. Maneja la concurrencia de forma segura
+        a nivel de base de datos: la actualización solo se aplica si el ticket sigue
+        en estado **CREADO**. Requiere rol **OPERARIO**.
+
+        El `operario_id` **no** se envía en el body: se obtiene del claim `user_id` del JWT.
+        Si otro operario tomó el ticket primero, se devuelve `409 Conflict`.
       tags:
         - Tickets (Operario)
       security:
@@ -66,13 +216,53 @@ paths:
       responses:
         '200':
           description: Ticket asignado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: UUID de ticket con formato inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflicto - El ticket ya fue asignado a otro operario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/tickets/{id}/estado:
     patch:
       summary: Actualizar Estado del Ticket
-      description: Avanza la máquina de estados (EN_CAMINO, EN_PROGRESO).
+      description: |
+        Avanza la máquina de estados del ticket. Requiere rol **OPERARIO** o **ADMIN**.
+
+        Transiciones permitidas:
+        - `ASIGNADO` → `EN_CAMINO`
+        - `EN_CAMINO` → `EN_PROGRESO`
+        - `EN_PROGRESO` → `FINALIZADO`
+
+        Cualquier otra transición devuelve `400 Bad Request`.
       tags:
         - Tickets (Operario / Admin)
       security:
@@ -84,6 +274,7 @@ paths:
           schema:
             type: string
             format: uuid
+          description: UUID del ticket
       requestBody:
         required: true
         content:
@@ -93,11 +284,50 @@ paths:
       responses:
         '200':
           description: Estado actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: Transición de estado inválida o body inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO ni ADMIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/tickets/{id}/finalizar:
     post:
       summary: Registrar Evidencia y Cobro
-      description: Cierra el trabajo operativo y adjunta la foto de evidencia.
+      description: |
+        Cierra el trabajo operativo y adjunta la foto de evidencia. Requiere rol **OPERARIO**.
+
+        El ticket debe estar en estado **EN_PROGRESO**; de lo contrario se devuelve `400 Bad Request`.
+        Al finalizar, el ticket pasa a estado **FINALIZADO** y se registran el precio final,
+        el método de pago y la URL de evidencia.
       tags:
         - Tickets (Operario)
       security:
@@ -109,6 +339,7 @@ paths:
           schema:
             type: string
             format: uuid
+          description: UUID del ticket
       requestBody:
         required: true
         content:
@@ -118,6 +349,40 @@ paths:
       responses:
         '200':
           description: Trabajo finalizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: El ticket no está EN_PROGRESO o el body es inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   securitySchemes:
@@ -125,8 +390,82 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: Token JWT obtenido en `POST /api/v1/auth/login`.
 
   schemas:
+    UsuarioRegistroRequest:
+      type: object
+      required:
+        - nombre
+        - email
+        - password
+        - rol
+      properties:
+        nombre:
+          type: string
+          maxLength: 150
+          example: "Juan Pérez"
+        email:
+          type: string
+          format: email
+          maxLength: 150
+          example: "juan.perez@example.com"
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: "secret123"
+        telefono:
+          type: string
+          maxLength: 50
+          example: "+54 11 5555-1234"
+        rol:
+          type: string
+          enum: [CLIENTE, OPERARIO]
+          example: "CLIENTE"
+
+    UsuarioRegistroResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "4196cbe5-f509-4009-acb0-7311c58359c0"
+        nombre:
+          type: string
+          example: "Juan Pérez"
+        email:
+          type: string
+          format: email
+          example: "juan.perez@example.com"
+        rol:
+          type: string
+          enum: [CLIENTE, OPERARIO, ADMIN]
+          example: "CLIENTE"
+
+    UsuarioLoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "juan.perez@example.com"
+        password:
+          type: string
+          format: password
+          example: "secret123"
+
+    UsuarioLoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT firmado (HS256) con expiración de 24 horas.
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
     TicketCrearRequest:
       type: object
       required:
@@ -151,6 +490,11 @@ components:
           type: string
           format: uuid
           example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        cliente_id:
+          type: string
+          format: uuid
+          description: Se obtiene del claim user_id del JWT.
+          example: "4196cbe5-f509-4009-acb0-7311c58359c0"
         estado:
           type: string
           example: "CREADO"
@@ -209,3 +553,17 @@ components:
           type: string
           format: uri
           example: "https://storage.midominio.com/evidencia/ticket_a1b2c3d4.jpg"
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "ticket asignado exitosamente"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "credenciales inválidas"
