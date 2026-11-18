@@ -15,27 +15,17 @@ type TicketHandler struct {
 	uc usecase.TicketUsecase
 }
 
-// NewTicketHandler registra las rutas de tickets en el router de Fiber proporcionado.
-func NewTicketHandler(router fiber.Router, uc usecase.TicketUsecase) {
-	handler := &TicketHandler{uc: uc}
-
-	tickets := router.Group("/tickets")
-	tickets.Post("", handler.CreateTicket)
-	tickets.Patch("/:id/asignar", handler.AssignTicket)
-	tickets.Patch("/:id/estado", handler.UpdateState)
-	tickets.Post("/:id/finalizar", handler.FinishTicket)
+// NewTicketHandler crea un handler de tickets. El registro de rutas (con sus
+// middlewares de autenticación y roles) se realiza en cmd/api/main.go.
+func NewTicketHandler(uc usecase.TicketUsecase) *TicketHandler {
+	return &TicketHandler{uc: uc}
 }
 
 // DTOs para solicitudes HTTP
 type createTicketRequest struct {
-	ClienteID           string `json:"cliente_id"`
 	ServicioID          int    `json:"servicio_id"`
 	Direccion           string `json:"direccion"`
 	DescripcionProblema string `json:"descripcion_problema"`
-}
-
-type assignTicketRequest struct {
-	OperarioID string `json:"operario_id"`
 }
 
 type updateStateRequest struct {
@@ -48,20 +38,16 @@ type finishTicketRequest struct {
 	EvidenciaURL string  `json:"evidencia_url"`
 }
 
-// CreateTicket maneja la creación de una solicitud de servicio.
+// CreateTicket crea una solicitud de servicio usando el cliente_id del JWT.
 func (h *TicketHandler) CreateTicket(c *fiber.Ctx) error {
-	var req createTicketRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cuerpo de solicitud inválido",
-		})
+	clienteUUID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
 	}
 
-	clienteUUID, err := uuid.Parse(req.ClienteID)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cliente_id con formato UUID inválido",
-		})
+	var req createTicketRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
 	}
 
 	ticket, err := h.uc.CreateTicket(c.UserContext(), clienteUUID, req.ServicioID, req.Direccion, req.DescripcionProblema)
@@ -72,54 +58,35 @@ func (h *TicketHandler) CreateTicket(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(ticket)
 }
 
-// AssignTicket maneja la aceptación del trabajo por parte de un operario.
+// AssignTicket asigna el ticket al operario autenticado (operario_id del JWT).
 func (h *TicketHandler) AssignTicket(c *fiber.Ctx) error {
-	idParam := c.Params("id")
-	ticketUUID, err := uuid.Parse(idParam)
+	ticketUUID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "id de ticket con formato UUID inválido",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
 	}
 
-	var req assignTicketRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cuerpo de solicitud inválido",
-		})
-	}
-
-	operarioUUID, err := uuid.Parse(req.OperarioID)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "operario_id con formato UUID inválido",
-		})
+	operarioUUID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "operario no autenticado"})
 	}
 
 	if err := h.uc.AssignTicket(c.UserContext(), ticketUUID, operarioUUID); err != nil {
 		return h.handleError(c, err)
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "ticket asignado exitosamente",
-	})
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "ticket asignado exitosamente"})
 }
 
-// UpdateState maneja el cambio de estado en la máquina de estados.
+// UpdateState avanza el ticket en la máquina de estados.
 func (h *TicketHandler) UpdateState(c *fiber.Ctx) error {
-	idParam := c.Params("id")
-	ticketUUID, err := uuid.Parse(idParam)
+	ticketUUID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "id de ticket con formato UUID inválido",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
 	}
 
 	var req updateStateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cuerpo de solicitud inválido",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
 	}
 
 	newState := domain.TicketState(req.NuevoEstado)
@@ -127,26 +94,19 @@ func (h *TicketHandler) UpdateState(c *fiber.Ctx) error {
 		return h.handleError(c, err)
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "estado actualizado exitosamente",
-	})
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "estado actualizado exitosamente"})
 }
 
-// FinishTicket maneja la finalización de un trabajo operativo.
+// FinishTicket registra el cobro y la evidencia, y finaliza el ticket.
 func (h *TicketHandler) FinishTicket(c *fiber.Ctx) error {
-	idParam := c.Params("id")
-	ticketUUID, err := uuid.Parse(idParam)
+	ticketUUID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "id de ticket con formato UUID inválido",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
 	}
 
 	var req finishTicketRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cuerpo de solicitud inválido",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
 	}
 
 	metodoPago := domain.MetodoPago(req.MetodoPago)
@@ -154,32 +114,19 @@ func (h *TicketHandler) FinishTicket(c *fiber.Ctx) error {
 		return h.handleError(c, err)
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "trabajo finalizado exitosamente",
-	})
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "trabajo finalizado exitosamente"})
 }
 
 // handleError traduce los errores de dominio a códigos de respuesta HTTP adecuados.
 func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
-	if errors.Is(err, domain.ErrTicketNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": err.Error(),
-		})
+	switch {
+	case errors.Is(err, domain.ErrTicketNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, domain.ErrInvalidStateTransition):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	default:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})
 	}
-
-	if errors.Is(err, domain.ErrTicketAlreadyAssigned) {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	if errors.Is(err, domain.ErrInvalidStateTransition) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": err.Error(),
-		})
-	}
-
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-		"error": "error interno del servidor",
-	})
 }
