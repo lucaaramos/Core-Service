@@ -7,10 +7,8 @@ import (
 	"os"
 
 	authDelivery "core-service/internal/auth/delivery/http"
-	authDomain "core-service/internal/auth/domain"
 	authRepo "core-service/internal/auth/infrastructure"
 	authUsecase "core-service/internal/auth/usecase"
-	"core-service/internal/middleware"
 	ticketDelivery "core-service/internal/ticket/delivery/http"
 	ticketRepo "core-service/internal/ticket/infrastructure"
 	ticketUsecase "core-service/internal/ticket/usecase"
@@ -74,32 +72,8 @@ func main() {
 	authDelivery.NewAuthHandler(v1, authUC)
 
 	// Rutas protegidas de tickets
-	tickets := v1.Group("/tickets", middleware.JWTProtected(jwtSecret))
 	ticketHandler := ticketDelivery.NewTicketHandler(ticketUC)
-
-	// POST /tickets -> solo CLIENTE (cliente_id se toma del JWT)
-	tickets.Post("",
-		middleware.RequireRole(string(authDomain.RoleCliente)),
-		ticketHandler.CreateTicket,
-	)
-
-	// PATCH /tickets/:id/asignar -> solo OPERARIO (operario_id se toma del JWT)
-	tickets.Patch("/:id/asignar",
-		middleware.RequireRole(string(authDomain.RoleOperario)),
-		ticketHandler.AssignTicket,
-	)
-
-	// PATCH /tickets/:id/estado -> OPERARIO (o ADMIN)
-	tickets.Patch("/:id/estado",
-		middleware.RequireRole(string(authDomain.RoleOperario), string(authDomain.RoleAdmin)),
-		ticketHandler.UpdateState,
-	)
-
-	// POST /tickets/:id/finalizar -> solo OPERARIO
-	tickets.Post("/:id/finalizar",
-		middleware.RequireRole(string(authDomain.RoleOperario)),
-		ticketHandler.FinishTicket,
-	)
+	ticketDelivery.RegisterRoutes(v1, ticketHandler, jwtSecret)
 
 	port := envOr("PORT", "8080")
 	log.Printf("Iniciando servidor Core-Service en el puerto %s...", port)

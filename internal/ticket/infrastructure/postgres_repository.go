@@ -162,6 +162,95 @@ func (r *PostgresTicketRepository) FindByID(ctx context.Context, id uuid.UUID) (
 	return m.toDomain()
 }
 
+// GetAvailable devuelve los tickets disponibles en la bolsa de trabajo (CREADO y sin operario).
+func (r *PostgresTicketRepository) GetAvailable(ctx context.Context) ([]domain.AvailableTicket, error) {
+	query := `
+		SELECT t.id, s.nombre, t.direccion, t.descripcion_problema, s.tarifa_base, t.created_at
+		FROM tickets t
+		INNER JOIN services s ON s.id = t.servicio_id
+		WHERE t.estado = $1 AND t.operario_id IS NULL
+		ORDER BY t.created_at ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, string(domain.StateCreado))
+	if err != nil {
+		return nil, fmt.Errorf("error consultando tickets disponibles: %w", err)
+	}
+	defer rows.Close()
+
+	available := make([]domain.AvailableTicket, 0)
+	for rows.Next() {
+		var t domain.AvailableTicket
+		if err := rows.Scan(
+			&t.ID,
+			&t.Servicio,
+			&t.Direccion,
+			&t.DescripcionProblema,
+			&t.TarifaBase,
+			&t.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("error escaneando ticket disponible: %w", err)
+		}
+		available = append(available, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterando tickets disponibles: %w", err)
+	}
+
+	return available, nil
+}
+
+// GetTicketsByUser devuelve todos los tickets donde el usuario participa como cliente u operario,
+// ordenados por fecha de creación descendente.
+func (r *PostgresTicketRepository) GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error) {
+	query := `
+		SELECT id, cliente_id, operario_id, servicio_id, estado, direccion, descripcion_problema, precio_final, metodo_pago, evidencia_url, created_at, updated_at
+		FROM tickets
+		WHERE cliente_id = $1 OR operario_id = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error consultando tickets del usuario: %w", err)
+	}
+	defer rows.Close()
+
+	tickets := make([]domain.Ticket, 0)
+	for rows.Next() {
+		var m ticketModel
+		if err := rows.Scan(
+			&m.ID,
+			&m.ClienteID,
+			&m.OperarioID,
+			&m.ServicioID,
+			&m.Estado,
+			&m.Direccion,
+			&m.DescripcionProblema,
+			&m.PrecioFinal,
+			&m.MetodoPago,
+			&m.EvidenciaURL,
+			&m.CreatedAt,
+			&m.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("error escaneando ticket del usuario: %w", err)
+		}
+
+		ticket, err := m.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, *ticket)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterando tickets del usuario: %w", err)
+	}
+
+	return tickets, nil
+}
+
 // AssignOperario maneja la concurrencia al aceptar un ticket mediante la cláusula WHERE estado = 'CREADO'.
 func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID) error {
 	query := `
