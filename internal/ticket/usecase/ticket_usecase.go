@@ -13,9 +13,21 @@ import (
 // TicketUsecase define el contrato para los casos de negocio de tickets.
 type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
+	GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error)
+	GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
 	UpdateTicketState(ctx context.Context, ticketID uuid.UUID, newState domain.TicketState) error
 	FinishTicket(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
+}
+
+// GetTicketsByUser devuelve los tickets asociados al usuario (como cliente u operario).
+func (u *ticketUsecase) GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error) {
+	tickets, err := u.repo.GetTicketsByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error al obtener tickets del usuario: %w", err)
+	}
+
+	return tickets, nil
 }
 
 type ticketUsecase struct {
@@ -46,6 +58,16 @@ func (u *ticketUsecase) CreateTicket(ctx context.Context, clienteID uuid.UUID, s
 	}
 
 	return t, nil
+}
+
+// GetAvailableTickets devuelve la bolsa de trabajo para los operarios (tickets CREADO sin asignar).
+func (u *ticketUsecase) GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error) {
+	tickets, err := u.repo.GetAvailable(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error al obtener tickets disponibles: %w", err)
+	}
+
+	return tickets, nil
 }
 
 // AssignTicket delega al repositorio la asignación segura del operario (control de concurrencia).

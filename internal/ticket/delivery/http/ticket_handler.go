@@ -38,6 +38,34 @@ type finishTicketRequest struct {
 	EvidenciaURL string  `json:"evidencia_url"`
 }
 
+type getTicketsRepsonse struct {
+	Tickets []domain.Ticket `json:"tickets"`
+}
+
+func (h *TicketHandler) GetTickets(c *fiber.Ctx) error {
+	userID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
+	}
+
+	tickets, err := h.uc.GetTicketsByUser(c.UserContext(), userID)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(getTicketsRepsonse{Tickets: tickets})
+}
+
+// GetAvailableTickets lista la bolsa de trabajo para los operarios.
+func (h *TicketHandler) GetAvailableTickets(c *fiber.Ctx) error {
+	tickets, err := h.uc.GetAvailableTickets(c.UserContext())
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(tickets)
+}
+
 // CreateTicket crea una solicitud de servicio usando el cliente_id del JWT.
 func (h *TicketHandler) CreateTicket(c *fiber.Ctx) error {
 	clienteUUID, ok := c.Locals("user_id").(uuid.UUID)

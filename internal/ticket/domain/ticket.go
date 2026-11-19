@@ -12,12 +12,12 @@ import (
 type TicketState string
 
 const (
-	StateCreado      TicketState = "CREADO"
-	StateAsignado    TicketState = "ASIGNADO"
-	StateEnCamino    TicketState = "EN_CAMINO"
-	StateEnProgreso  TicketState = "EN_PROGRESO"
-	StateFinalizado  TicketState = "FINALIZADO"
-	StateCancelado   TicketState = "CANCELADO"
+	StateCreado     TicketState = "CREADO"
+	StateAsignado   TicketState = "ASIGNADO"
+	StateEnCamino   TicketState = "EN_CAMINO"
+	StateEnProgreso TicketState = "EN_PROGRESO"
+	StateFinalizado TicketState = "FINALIZADO"
+	StateCancelado  TicketState = "CANCELADO"
 )
 
 // MetodoPago representa los métodos de pago aceptados al finalizar un ticket.
@@ -30,8 +30,8 @@ const (
 )
 
 var (
-	ErrTicketNotFound      = errors.New("ticket no encontrado")
-	ErrTicketAlreadyAssigned = errors.New("el ticket ya fue asignado a otro operario")
+	ErrTicketNotFound         = errors.New("ticket no encontrado")
+	ErrTicketAlreadyAssigned  = errors.New("el ticket ya fue asignado a otro operario")
 	ErrInvalidStateTransition = errors.New("transición de estado inválida")
 )
 
@@ -44,11 +44,22 @@ type Ticket struct {
 	Estado              TicketState
 	Direccion           string
 	DescripcionProblema string
-	PrecioFinal         *float64 // Puntero ya que es nulo hasta finalizar
+	PrecioFinal         *float64    // Puntero ya que es nulo hasta finalizar
 	MetodoPago          *MetodoPago // Puntero ya que es nulo hasta finalizar
-	EvidenciaURL        *string // Puntero ya que es nulo hasta finalizar
+	EvidenciaURL        *string     // Puntero ya que es nulo hasta finalizar
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+// AvailableTicket representa un ticket en la bolsa de trabajo (estado CREADO y sin operario),
+// enriquecido con los datos del servicio para mostrarlo al operario.
+type AvailableTicket struct {
+	ID                  uuid.UUID
+	Servicio            string
+	Direccion           string
+	DescripcionProblema string
+	TarifaBase          float64
+	CreatedAt           time.Time
 }
 
 // Repository define el contrato de persistencia para el dominio Ticket.
@@ -56,6 +67,12 @@ type Ticket struct {
 type Repository interface {
 	// Create persiste un nuevo ticket en la base de datos.
 	Create(ctx context.Context, t *Ticket) error
+
+	// Get all tickets for a specific user (cliente or operario) by their UUID.
+	GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]Ticket, error)
+
+	// GetAvailable devuelve los tickets en estado CREADO y sin operario (bolsa de trabajo).
+	GetAvailable(ctx context.Context) ([]AvailableTicket, error)
 
 	// FindByID busca un ticket por su identificador único UUID.
 	FindByID(ctx context.Context, id uuid.UUID) (*Ticket, error)
