@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	authDelivery "core-service/internal/auth/delivery/http"
 	authRepo "core-service/internal/auth/infrastructure"
@@ -48,7 +52,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error abriendo la conexión a la base de datos: %v", err)
 	}
-	defer db.Close()
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Error haciendo ping a la base de datos: %v", err)
@@ -86,10 +89,34 @@ func main() {
 	ticketDelivery.RegisterRoutes(v1, ticketHandler, jwtSecret)
 
 	port := envOr("PORT", "8080")
-	log.Printf("Iniciando servidor Core-Service en el puerto %s...", port)
-	if err := app.Listen(":" + port); err != nil {
-		log.Fatalf("Error al iniciar el servidor Fiber: %v", err)
+
+	// Graceful shutdown: escucha SIGINT/SIGTERM (docker compose down) y cierra
+	// ordenadamente el servidor HTTP y la conexión a PostgreSQL.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("Iniciando servidor Core-Service en el puerto %s...", port)
+		if err := app.Listen(":" + port); err != nil {
+			log.Printf("Servidor Fiber detenido: %v", err)
+		}
+	}()
+
+	<-quit
+	log.Println("Señal de apagado recibida, cerrando servidor...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+		log.Printf("Error al apagar el servidor HTTP: %v", err)
 	}
+
+	if err := db.Close(); err != nil {
+		log.Printf("Error al cerrar la conexión a PostgreSQL: %v", err)
+	}
+
+	log.Println("Apagado completo")
 }
 
 func envOr(key, fallback string) string {
