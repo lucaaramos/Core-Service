@@ -37,29 +37,29 @@ var (
 
 // Ticket representa la entidad de dominio para una solicitud de servicio.
 type Ticket struct {
-	ID                  uuid.UUID
-	ClienteID           uuid.UUID
-	OperarioID          *uuid.UUID // Puntero ya que puede ser nulo al inicio (CREADO)
-	ServicioID          int
-	Estado              TicketState
-	Direccion           string
-	DescripcionProblema string
-	PrecioFinal         *float64    // Puntero ya que es nulo hasta finalizar
-	MetodoPago          *MetodoPago // Puntero ya que es nulo hasta finalizar
-	EvidenciaURL        *string     // Puntero ya que es nulo hasta finalizar
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                  uuid.UUID   `json:"id"`
+	ClienteID           uuid.UUID   `json:"cliente_id"`
+	OperarioID          *uuid.UUID  `json:"operario_id"` // Puntero ya que puede ser nulo al inicio (CREADO)
+	ServicioID          int         `json:"servicio_id"`
+	Estado              TicketState `json:"estado"`
+	Direccion           string      `json:"direccion"`
+	DescripcionProblema string      `json:"descripcion_problema"`
+	PrecioFinal         *float64    `json:"precio_final"`  // Puntero ya que es nulo hasta finalizar
+	MetodoPago          *MetodoPago `json:"metodo_pago"`   // Puntero ya que es nulo hasta finalizar
+	EvidenciaURL        *string     `json:"evidencia_url"` // Puntero ya que es nulo hasta finalizar
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
 }
 
 // AvailableTicket representa un ticket en la bolsa de trabajo (estado CREADO y sin operario),
 // enriquecido con los datos del servicio para mostrarlo al operario.
 type AvailableTicket struct {
-	ID                  uuid.UUID
-	Servicio            string
-	Direccion           string
-	DescripcionProblema string
-	TarifaBase          float64
-	CreatedAt           time.Time
+	ID                  uuid.UUID `json:"id"`
+	Servicio            string    `json:"servicio"`
+	Direccion           string    `json:"direccion"`
+	DescripcionProblema string    `json:"descripcion_problema"`
+	TarifaBase          float64   `json:"tarifa_base"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // Repository define el contrato de persistencia para el dominio Ticket.

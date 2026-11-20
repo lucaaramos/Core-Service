@@ -9,6 +9,9 @@ import (
 	authDelivery "core-service/internal/auth/delivery/http"
 	authRepo "core-service/internal/auth/infrastructure"
 	authUsecase "core-service/internal/auth/usecase"
+	serviceDelivery "core-service/internal/service/delivery/http"
+	serviceRepo "core-service/internal/service/infrastructure"
+	serviceUsecase "core-service/internal/service/usecase"
 	ticketDelivery "core-service/internal/ticket/delivery/http"
 	ticketRepo "core-service/internal/ticket/infrastructure"
 	ticketUsecase "core-service/internal/ticket/usecase"
@@ -59,6 +62,9 @@ func main() {
 	ticketRepoInstance := ticketRepo.NewPostgresTicketRepository(db)
 	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance)
 
+	serviceRepoInstance := serviceRepo.NewPostgresServiceRepository(db)
+	serviceUC := serviceUsecase.NewServiceUsecase(serviceRepoInstance)
+
 	app := fiber.New(fiber.Config{AppName: "Core-Service API (MVP)"})
 	app.Use(logger.New())
 
@@ -70,6 +76,10 @@ func main() {
 
 	// Rutas públicas de autenticación
 	authDelivery.NewAuthHandler(v1, authUC)
+
+	// Rutas del catálogo de servicios (requieren autenticación)
+	serviceHandler := serviceDelivery.NewServiceHandler(serviceUC)
+	serviceDelivery.RegisterRoutes(v1, serviceHandler, jwtSecret)
 
 	// Rutas protegidas de tickets
 	ticketHandler := ticketDelivery.NewTicketHandler(ticketUC)
