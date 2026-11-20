@@ -34,6 +34,7 @@ var (
 	ErrTicketAlreadyAssigned  = errors.New("el ticket ya fue asignado a otro operario")
 	ErrInvalidStateTransition = errors.New("transición de estado inválida")
 	ErrInvalidTicketState     = errors.New("estado de ticket inválido")
+	ErrTicketAccessDenied     = errors.New("no tenés permiso para acceder a este ticket")
 )
 
 // IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.
@@ -102,4 +103,8 @@ type Repository interface {
 
 	// UpdateState actualiza el estado actual del ticket en la máquina de estados.
 	UpdateState(ctx context.Context, ticketID uuid.UUID, newState TicketState) error
+
+	// Finish registra precio final, método de pago y evidencia, y pasa el ticket a FINALIZADO
+	// en una sola operación atómica condicionada a que siga en estado EN_PROGRESO.
+	Finish(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago MetodoPago, evidenciaURL string) error
 }
