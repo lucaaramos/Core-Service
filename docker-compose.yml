@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -14,11 +12,47 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d core_service_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-core_service_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  migrate:
+    image: migrate/migrate:v4.18.3
+    container_name: core_migrate
+    restart: "no"
+    volumes:
+      - ./db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgressecurepassword}@postgres:5432/${POSTGRES_DB:-core_service_db}?sslmode=disable"
+      - "up"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: core_api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgressecurepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-core_service_db}
+      POSTGRES_PORT: "5432"
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgressecurepassword}@postgres:5432/${POSTGRES_DB:-core_service_db}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
