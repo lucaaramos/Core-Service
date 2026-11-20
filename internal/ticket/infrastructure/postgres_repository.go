@@ -328,3 +328,41 @@ func (r *PostgresTicketRepository) UpdateState(ctx context.Context, ticketID uui
 
 	return nil
 }
+
+// Finish registra el cierre del trabajo: precio final, método de pago, evidencia y estado FINALIZADO,
+// condicionado a que el ticket siga en EN_PROGRESO para evitar cierres concurrentes o inconsistentes.
+func (r *PostgresTicketRepository) Finish(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
+	query := `
+		UPDATE tickets
+		SET precio_final = $1, metodo_pago = $2, evidencia_url = $3, estado = $4, updated_at = NOW()
+		WHERE id = $5 AND estado = $6
+	`
+
+	var evidencia interface{}
+	if evidenciaURL != "" {
+		evidencia = evidenciaURL
+	}
+
+	result, err := r.db.ExecContext(ctx, query,
+		precioFinal,
+		string(metodoPago),
+		evidencia,
+		string(domain.StateFinalizado),
+		ticketID,
+		string(domain.StateEnProgreso),
+	)
+	if err != nil {
+		return fmt.Errorf("error finalizando ticket: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error obteniendo filas afectadas al finalizar: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return domain.ErrInvalidStateTransition
+	}
+
+	return nil
+}

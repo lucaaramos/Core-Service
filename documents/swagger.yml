@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -348,6 +348,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/tickets/{id}:
+    get:
+      summary: Obtener Detalle de un Ticket
+      description: |
+        Devuelve el detalle completo de un ticket. Solo puede consultarlo:
+
+        - el **CLIENTE** que lo creó,
+        - el **OPERARIO** asignado al ticket,
+        - un **ADMIN** (acceso total).
+
+        Si el usuario no participa del ticket, responde `403 Forbidden`.
+      tags:
+        - Tickets (Cliente)
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket
+      responses:
+        '200':
+          description: Detalle del ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '400':
+          description: UUID de ticket con formato inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario no es el cliente dueño ni el operario asignado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/tickets/{id}/estado:
     patch:
       summary: Actualizar Estado del Ticket
@@ -357,9 +413,13 @@ paths:
         Transiciones permitidas:
         - `ASIGNADO` → `EN_CAMINO`
         - `EN_CAMINO` → `EN_PROGRESO`
-        - `EN_PROGRESO` → `FINALIZADO`
 
-        Cualquier otra transición devuelve `400 Bad Request`.
+        **Importante:** el estado `FINALIZADO` **no** se puede setear por este endpoint.
+        Todo cierre debe pasar por `POST /tickets/{id}/finalizar`, que exige precio final,
+        método de pago y evidencia. Para cancelar se usa `PATCH /tickets/{id}/cancelar`.
+
+        Si el usuario es **OPERARIO**, debe ser el operario asignado al ticket; de lo
+        contrario responde `403 Forbidden`. Cualquier otra transición devuelve `400`.
       tags:
         - Tickets (Operario / Admin)
       security:
@@ -398,7 +458,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: El usuario autenticado no tiene rol OPERARIO ni ADMIN
+          description: El usuario no es el operario asignado (o no tiene rol OPERARIO/ADMIN)
           content:
             application/json:
               schema:
@@ -422,9 +482,12 @@ paths:
       description: |
         Cierra el trabajo operativo y adjunta la foto de evidencia. Requiere rol **OPERARIO**.
 
-        El ticket debe estar en estado **EN_PROGRESO**; de lo contrario se devuelve `400 Bad Request`.
-        Al finalizar, el ticket pasa a estado **FINALIZADO** y se registran el precio final,
-        el método de pago y la URL de evidencia.
+        El operario autenticado debe ser el **operario asignado** al ticket; de lo contrario
+        responde `403 Forbidden`. El ticket debe estar en estado **EN_PROGRESO**; de lo
+        contrario se devuelve `400 Bad Request`.
+
+        Al finalizar, el ticket pasa a estado **FINALIZADO** y se registran en una sola
+        operación el precio final, el método de pago y la URL de evidencia.
       tags:
         - Tickets (Operario)
       security:
@@ -463,7 +526,72 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: El usuario autenticado no tiene rol OPERARIO
+          description: El usuario no es el operario asignado (o no tiene rol OPERARIO)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tickets/{id}/cancelar:
+    patch:
+      summary: Cancelar un Ticket
+      description: |
+        Cancela un ticket que todavía no fue finalizado y lo pasa a estado **CANCELADO**.
+
+        Puede cancelarlo:
+        - el **CLIENTE** dueño del ticket,
+        - el **OPERARIO** asignado,
+        - un **ADMIN**.
+
+        No se puede cancelar un ticket en estado `FINALIZADO` o `CANCELADO`
+        (responde `400 Bad Request`). Si el usuario no participa del ticket,
+        responde `403 Forbidden`.
+      tags:
+        - Tickets (Cliente)
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket
+      responses:
+        '200':
+          description: Ticket cancelado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: El ticket ya está FINALIZADO o CANCELADO, o el UUID es inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario no es el cliente dueño, el operario asignado ni ADMIN
           content:
             application/json:
               schema:
@@ -708,7 +836,8 @@ components:
       properties:
         nuevo_estado:
           type: string
-          enum: [EN_CAMINO, EN_PROGRESO, FINALIZADO]
+          enum: [EN_CAMINO, EN_PROGRESO]
+          description: FINALIZADO se gestiona únicamente vía /finalizar; CANCELADO vía /cancelar.
           example: "EN_CAMINO"
 
     TicketFinalizarRequest:

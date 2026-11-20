@@ -74,6 +74,28 @@ func (h *TicketHandler) GetAvailableTickets(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(tickets)
 }
 
+// GetTicket devuelve el detalle de un ticket si el usuario participa en él (o es ADMIN).
+func (h *TicketHandler) GetTicket(c *fiber.Ctx) error {
+	ticketUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
+	}
+
+	userID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
+	}
+
+	rol, _ := c.Locals("rol").(string)
+
+	ticket, err := h.uc.GetTicket(c.UserContext(), ticketUUID, userID, rol)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(ticket)
+}
+
 // CreateTicket crea una solicitud de servicio usando el cliente_id del JWT.
 func (h *TicketHandler) CreateTicket(c *fiber.Ctx) error {
 	clienteUUID, ok := c.Locals("user_id").(uuid.UUID)
@@ -126,7 +148,15 @@ func (h *TicketHandler) UpdateState(c *fiber.Ctx) error {
 	}
 
 	newState := domain.TicketState(req.NuevoEstado)
-	if err := h.uc.UpdateTicketState(c.UserContext(), ticketUUID, newState); err != nil {
+
+	userID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
+	}
+
+	rol, _ := c.Locals("rol").(string)
+
+	if err := h.uc.UpdateTicketState(c.UserContext(), ticketUUID, userID, rol, newState); err != nil {
 		return h.handleError(c, err)
 	}
 
@@ -146,11 +176,38 @@ func (h *TicketHandler) FinishTicket(c *fiber.Ctx) error {
 	}
 
 	metodoPago := domain.MetodoPago(req.MetodoPago)
-	if err := h.uc.FinishTicket(c.UserContext(), ticketUUID, req.PrecioFinal, metodoPago, req.EvidenciaURL); err != nil {
+
+	operarioID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "operario no autenticado"})
+	}
+
+	if err := h.uc.FinishTicket(c.UserContext(), ticketUUID, operarioID, req.PrecioFinal, metodoPago, req.EvidenciaURL); err != nil {
 		return h.handleError(c, err)
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "trabajo finalizado exitosamente"})
+}
+
+// CancelTicket cancela un ticket que aún no fue finalizado.
+func (h *TicketHandler) CancelTicket(c *fiber.Ctx) error {
+	ticketUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
+	}
+
+	userID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
+	}
+
+	rol, _ := c.Locals("rol").(string)
+
+	if err := h.uc.CancelTicket(c.UserContext(), ticketUUID, userID, rol); err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "ticket cancelado exitosamente"})
 }
 
 // handleError traduce los errores de dominio a códigos de respuesta HTTP adecuados.
@@ -158,6 +215,8 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, domain.ErrTicketNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, domain.ErrTicketAccessDenied):
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrInvalidStateTransition), errors.Is(err, domain.ErrInvalidTicketState):

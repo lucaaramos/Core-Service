@@ -14,10 +14,12 @@ import (
 type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
 	ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error)
+	GetTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) (*domain.Ticket, error)
 	GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
-	UpdateTicketState(ctx context.Context, ticketID uuid.UUID, newState domain.TicketState) error
-	FinishTicket(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
+	UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error
+	FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
+	CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error
 }
 
 // ListTickets devuelve los tickets visibles para el usuario según su rol:
@@ -97,18 +99,42 @@ func (u *ticketUsecase) AssignTicket(ctx context.Context, ticketID, operarioID u
 	return nil
 }
 
+// GetTicket devuelve el detalle de un ticket validando que el usuario sea el cliente dueño,
+// el operario asignado o un ADMIN.
+func (u *ticketUsecase) GetTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) (*domain.Ticket, error) {
+	ticket, err := u.repo.FindByID(ctx, ticketID)
+	if err != nil {
+		return nil, err
+	}
+
+	if rol != "ADMIN" && !isTicketMember(ticket, userID) {
+		return nil, domain.ErrTicketAccessDenied
+	}
+
+	return ticket, nil
+}
+
 // UpdateTicketState valida la máquina de estados y actualiza el estado del ticket.
-func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID uuid.UUID, newState domain.TicketState) error {
+// Solo permite avanzar entre ASIGNADO → EN_CAMINO → EN_PROGRESO: el cierre debe
+// hacerse por FinishTicket (con precio y método de pago) y la cancelación por CancelTicket.
+// El operario autenticado debe ser el asignado al ticket (evita IDOR entre operarios).
+func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
 		return err
 	}
 
-	// Validar transiciones permitidas según la máquina de estados del negocio:
-	// CREADO -> ASIGNADO (se maneja por AssignTicket)
-	// ASIGNADO -> EN_CAMINO
-	// EN_CAMINO -> EN_PROGRESO
-	// EN_PROGRESO -> FINALIZADO (o mediante FinishTicket)
+	if rol != "ADMIN" {
+		if ticket.OperarioID == nil || *ticket.OperarioID != userID {
+			return domain.ErrTicketAccessDenied
+		}
+	}
+
+	// FINALIZADO y CANCELADO tienen endpoints dedicados.
+	if newState == domain.StateFinalizado || newState == domain.StateCancelado {
+		return fmt.Errorf("%w: %s debe gestionarse con su endpoint específico", domain.ErrInvalidStateTransition, newState)
+	}
+
 	validTransition := false
 	switch ticket.Estado {
 	case domain.StateAsignado:
@@ -117,10 +143,6 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID uuid.UUI
 		}
 	case domain.StateEnCamino:
 		if newState == domain.StateEnProgreso {
-			validTransition = true
-		}
-	case domain.StateEnProgreso:
-		if newState == domain.StateFinalizado {
 			validTransition = true
 		}
 	}
@@ -132,23 +154,59 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID uuid.UUI
 	return u.repo.UpdateState(ctx, ticketID, newState)
 }
 
-// FinishTicket valida que el ticket esté en progreso, registra los datos de cobro y evidencia, y lo finaliza.
-func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
+// FinishTicket valida que el ticket esté en progreso y que el operario autenticado sea el
+// asignado, y registra el precio final, el método de pago y la evidencia en una sola operación.
+func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
 		return err
+	}
+
+	if ticket.OperarioID == nil || *ticket.OperarioID != userID {
+		return domain.ErrTicketAccessDenied
 	}
 
 	if ticket.Estado != domain.StateEnProgreso {
 		return fmt.Errorf("%w: el ticket debe estar EN_PROGRESO para ser finalizado, estado actual: %s", domain.ErrInvalidStateTransition, ticket.Estado)
 	}
 
-	// Actualizar campos financieros y evidencia
-	// Nota: Si el repositorio requiere una actualización específica para finalizar, podemos extenderlo o realizar un UpdateState.
-	// Aquí actualizamos el estado a FINALIZADO. (Idealmente guardaríamos precioFinal, metodoPago y evidenciaURL en una evolución del repo si es necesario).
-	if err := u.repo.UpdateState(ctx, ticketID, domain.StateFinalizado); err != nil {
+	switch metodoPago {
+	case domain.PagoEfectivo, domain.PagoQR, domain.PagoTransferencia:
+		// válido
+	default:
+		return fmt.Errorf("%w: método de pago inválido: %s", domain.ErrInvalidStateTransition, metodoPago)
+	}
+
+	if err := u.repo.Finish(ctx, ticketID, precioFinal, metodoPago, evidenciaURL); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// CancelTicket cancela un ticket que aún no fue finalizado. Puede hacerlo el cliente dueño,
+// el operario asignado o un ADMIN.
+func (u *ticketUsecase) CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error {
+	ticket, err := u.repo.FindByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+
+	if rol != "ADMIN" && !isTicketMember(ticket, userID) {
+		return domain.ErrTicketAccessDenied
+	}
+
+	if ticket.Estado == domain.StateFinalizado || ticket.Estado == domain.StateCancelado {
+		return fmt.Errorf("%w: no se puede cancelar un ticket en estado %s", domain.ErrInvalidStateTransition, ticket.Estado)
+	}
+
+	return u.repo.UpdateState(ctx, ticketID, domain.StateCancelado)
+}
+
+// isTicketMember indica si el usuario participa del ticket como cliente o como operario asignado.
+func isTicketMember(ticket *domain.Ticket, userID uuid.UUID) bool {
+	if ticket.ClienteID == userID {
+		return true
+	}
+	return ticket.OperarioID != nil && *ticket.OperarioID == userID
 }
