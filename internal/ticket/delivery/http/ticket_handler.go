@@ -38,22 +38,30 @@ type finishTicketRequest struct {
 	EvidenciaURL string  `json:"evidencia_url"`
 }
 
-type getTicketsRepsonse struct {
-	Tickets []domain.Ticket `json:"tickets"`
-}
-
-func (h *TicketHandler) GetTickets(c *fiber.Ctx) error {
+// ListTickets lista los tickets visibles según el rol del usuario autenticado.
+// Acepta el query param opcional ?estado=CREADO|ASIGNADO|EN_CAMINO|EN_PROGRESO|FINALIZADO|CANCELADO.
+func (h *TicketHandler) ListTickets(c *fiber.Ctx) error {
 	userID, ok := c.Locals("user_id").(uuid.UUID)
 	if !ok {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "usuario no autenticado"})
 	}
 
-	tickets, err := h.uc.GetTicketsByUser(c.UserContext(), userID)
+	rol, ok := c.Locals("rol").(string)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "rol no disponible en el token"})
+	}
+
+	var estado *string
+	if q := c.Query("estado"); q != "" {
+		estado = &q
+	}
+
+	tickets, err := h.uc.ListTickets(c.UserContext(), userID, rol, estado)
 	if err != nil {
 		return h.handleError(c, err)
 	}
 
-	return c.Status(fiber.StatusOK).JSON(getTicketsRepsonse{Tickets: tickets})
+	return c.Status(fiber.StatusOK).JSON(tickets)
 }
 
 // GetAvailableTickets lista la bolsa de trabajo para los operarios.
@@ -152,7 +160,7 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case errors.Is(err, domain.ErrInvalidStateTransition):
+	case errors.Is(err, domain.ErrInvalidStateTransition), errors.Is(err, domain.ErrInvalidTicketState):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})

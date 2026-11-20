@@ -23,7 +23,7 @@ func RegisterRoutes(router fiber.Router, handler *TicketHandler, jwtSecret strin
 
 	tickets.Get("",
 		middleware.RequireRole(string(authDomain.RoleCliente), string(authDomain.RoleOperario), string(authDomain.RoleAdmin)),
-		handler.GetTickets,
+		handler.ListTickets,
 	)
 
 	tickets.Patch("/:id/asignar",

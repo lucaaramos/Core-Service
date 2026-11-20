@@ -13,18 +13,37 @@ import (
 // TicketUsecase define el contrato para los casos de negocio de tickets.
 type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
-	GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error)
+	ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error)
 	GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
 	UpdateTicketState(ctx context.Context, ticketID uuid.UUID, newState domain.TicketState) error
 	FinishTicket(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
 }
 
-// GetTicketsByUser devuelve los tickets asociados al usuario (como cliente u operario).
-func (u *ticketUsecase) GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error) {
-	tickets, err := u.repo.GetTicketsByUser(ctx, userID)
+// ListTickets devuelve los tickets visibles para el usuario según su rol:
+// CLIENTE ve solo los suyos como cliente, OPERARIO solo los asignados a él y ADMIN ve todos.
+// Opcionalmente se filtra por estado (validado contra la máquina de estados).
+func (u *ticketUsecase) ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error) {
+	if estado != nil && !domain.IsValidTicketState(*estado) {
+		return nil, fmt.Errorf("%w: %s", domain.ErrInvalidTicketState, *estado)
+	}
+
+	filter := domain.TicketFilter{Estado: estado}
+
+	switch rol {
+	case "CLIENTE":
+		filter.ClienteID = &userID
+	case "OPERARIO":
+		filter.OperarioID = &userID
+	case "ADMIN":
+		// Sin filtro de usuario: ve todos los tickets.
+	default:
+		return nil, fmt.Errorf("rol no autorizado para listar tickets: %s", rol)
+	}
+
+	tickets, err := u.repo.List(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("error al obtener tickets del usuario: %w", err)
+		return nil, fmt.Errorf("error al listar tickets: %w", err)
 	}
 
 	return tickets, nil
