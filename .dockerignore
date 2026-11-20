@@ -1,0 +1,38 @@
+# Control de versiones
+.git
+.gitignore
+.gitattributes
+
+# Secretos y variables de entorno locales
+.env
+.env.*
+!.env.example
+
+# Documentación e imágenes del repo
+*.md
+*.png
+*.drawio.png
+documents/
+
+# Infraestructura local (no necesaria en el contexto de build)
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Tests y temporales
+tests/
+tmp/
+coverage.out
+*.test
+
+# Binarios y artefactos locales
+bin/
+dist/
+*.exe
+*.out
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+*.swp
