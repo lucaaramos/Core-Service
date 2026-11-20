@@ -33,7 +33,26 @@ var (
 	ErrTicketNotFound         = errors.New("ticket no encontrado")
 	ErrTicketAlreadyAssigned  = errors.New("el ticket ya fue asignado a otro operario")
 	ErrInvalidStateTransition = errors.New("transición de estado inválida")
+	ErrInvalidTicketState     = errors.New("estado de ticket inválido")
 )
+
+// IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.
+func IsValidTicketState(s string) bool {
+	switch TicketState(s) {
+	case StateCreado, StateAsignado, StateEnCamino, StateEnProgreso, StateFinalizado, StateCancelado:
+		return true
+	default:
+		return false
+	}
+}
+
+// TicketFilter agrupa los filtros opcionales para listar tickets.
+// Los campos en nil no se aplican a la consulta.
+type TicketFilter struct {
+	ClienteID  *uuid.UUID
+	OperarioID *uuid.UUID
+	Estado     *string
+}
 
 // Ticket representa la entidad de dominio para una solicitud de servicio.
 type Ticket struct {
@@ -68,8 +87,8 @@ type Repository interface {
 	// Create persiste un nuevo ticket en la base de datos.
 	Create(ctx context.Context, t *Ticket) error
 
-	// Get all tickets for a specific user (cliente or operario) by their UUID.
-	GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]Ticket, error)
+	// List devuelve los tickets que cumplen con los filtros indicados, ordenados por created_at DESC.
+	List(ctx context.Context, filter TicketFilter) ([]Ticket, error)
 
 	// GetAvailable devuelve los tickets en estado CREADO y sin operario (bolsa de trabajo).
 	GetAvailable(ctx context.Context) ([]AvailableTicket, error)

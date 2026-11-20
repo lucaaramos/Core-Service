@@ -201,19 +201,36 @@ func (r *PostgresTicketRepository) GetAvailable(ctx context.Context) ([]domain.A
 	return available, nil
 }
 
-// GetTicketsByUser devuelve todos los tickets donde el usuario participa como cliente u operario,
-// ordenados por fecha de creación descendente.
-func (r *PostgresTicketRepository) GetTicketsByUser(ctx context.Context, userID uuid.UUID) ([]domain.Ticket, error) {
+// List devuelve los tickets que cumplen con los filtros opcionales indicados,
+// aplicando solo los que están presentes y ordenando por fecha de creación descendente.
+func (r *PostgresTicketRepository) List(ctx context.Context, filter domain.TicketFilter) ([]domain.Ticket, error) {
 	query := `
 		SELECT id, cliente_id, operario_id, servicio_id, estado, direccion, descripcion_problema, precio_final, metodo_pago, evidencia_url, created_at, updated_at
 		FROM tickets
-		WHERE cliente_id = $1 OR operario_id = $1
-		ORDER BY created_at DESC
+		WHERE 1 = 1
 	`
+	args := make([]interface{}, 0, 3)
 
-	rows, err := r.db.QueryContext(ctx, query, userID)
+	if filter.ClienteID != nil {
+		args = append(args, *filter.ClienteID)
+		query += fmt.Sprintf(" AND cliente_id = $%d", len(args))
+	}
+
+	if filter.OperarioID != nil {
+		args = append(args, *filter.OperarioID)
+		query += fmt.Sprintf(" AND operario_id = $%d", len(args))
+	}
+
+	if filter.Estado != nil {
+		args = append(args, *filter.Estado)
+		query += fmt.Sprintf(" AND estado = $%d", len(args))
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("error consultando tickets del usuario: %w", err)
+		return nil, fmt.Errorf("error consultando tickets: %w", err)
 	}
 	defer rows.Close()
 
@@ -234,7 +251,7 @@ func (r *PostgresTicketRepository) GetTicketsByUser(ctx context.Context, userID 
 			&m.CreatedAt,
 			&m.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("error escaneando ticket del usuario: %w", err)
+			return nil, fmt.Errorf("error escaneando ticket: %w", err)
 		}
 
 		ticket, err := m.toDomain()
@@ -245,7 +262,7 @@ func (r *PostgresTicketRepository) GetTicketsByUser(ctx context.Context, userID 
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterando tickets del usuario: %w", err)
+		return nil, fmt.Errorf("error iterando tickets: %w", err)
 	}
 
 	return tickets, nil

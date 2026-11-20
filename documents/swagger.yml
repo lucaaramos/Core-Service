@@ -163,25 +163,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: Listar Mis Tickets
+      summary: Listar Tickets (filtrado por rol)
       description: |
-        Devuelve todos los tickets en los que participa el usuario autenticado,
-        ya sea como **cliente** o como **operario**, ordenados por fecha de creación
-        descendente. Requiere cualquier rol autenticado (CLIENTE, OPERARIO o ADMIN).
+        Devuelve los tickets visibles para el usuario autenticado, ordenados por
+        fecha de creación descendente. El filtro de usuario se aplica según el rol
+        del JWT:
 
-        El usuario se identifica a partir del claim `user_id` del JWT.
+        - **CLIENTE**: solo los tickets creados por él.
+        - **OPERARIO**: solo los tickets asignados a él.
+        - **ADMIN**: todos los tickets de la plataforma.
+
+        Si no hay resultados, devuelve un array vacío `[]`.
       tags:
         - Tickets (Cliente)
         - Tickets (Operario)
+        - Tickets (Operario / Admin)
       security:
         - bearerAuth: []
+      parameters:
+        - name: estado
+          in: query
+          required: false
+          description: Filtra por estado del ticket. Si el valor no es válido, responde 400.
+          schema:
+            type: string
+            enum: [CREADO, ASIGNADO, EN_CAMINO, EN_PROGRESO, FINALIZADO, CANCELADO]
+          example: "EN_PROGRESO"
       responses:
         '200':
-          description: Lista de tickets del usuario ([] si no tiene ninguno)
+          description: Lista de tickets visibles para el usuario ([] si no hay ninguno)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TicketListResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/Ticket'
+        '400':
+          description: Valor de estado inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Token ausente, inválido o expirado
           content:
@@ -633,15 +655,6 @@ components:
           type: string
           format: date-time
           example: "2026-11-19T19:08:56Z"
-
-    TicketListResponse:
-      type: object
-      description: Envoltorio de la lista de tickets del usuario autenticado.
-      properties:
-        tickets:
-          type: array
-          items:
-            $ref: '#/components/schemas/Ticket'
 
     Service:
       type: object
