@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -26,6 +26,8 @@ tags:
     description: Endpoints disponibles para usuarios con rol OPERARIO
   - name: Tickets (Operario / Admin)
     description: Endpoints disponibles para OPERARIO y ADMIN
+  - name: Servicios
+    description: Catálogo de servicios ofrecidos por la plataforma
 paths:
   /api/v1/auth/register:
     post:
@@ -160,6 +162,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Listar Mis Tickets
+      description: |
+        Devuelve todos los tickets en los que participa el usuario autenticado,
+        ya sea como **cliente** o como **operario**, ordenados por fecha de creación
+        descendente. Requiere cualquier rol autenticado (CLIENTE, OPERARIO o ADMIN).
+
+        El usuario se identifica a partir del claim `user_id` del JWT.
+      tags:
+        - Tickets (Cliente)
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Lista de tickets del usuario ([] si no tiene ninguno)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketListResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene un rol permitido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/tickets/disponibles:
     get:
@@ -186,6 +226,41 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/services:
+    get:
+      summary: Listar Catálogo de Servicios
+      description: |
+        Devuelve el catálogo completo de servicios ofrecidos por la plataforma
+        (plomería, electricidad, etc.), ordenado por `id` ascendente.
+
+        Requiere un usuario autenticado (cualquier rol: CLIENTE, OPERARIO o ADMIN).
+        Si no hay servicios cargados, devuelve un array vacío `[]`.
+      tags:
+        - Servicios
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Catálogo de servicios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
           content:
             application/json:
               schema:
@@ -502,6 +577,94 @@ components:
           type: string
           format: date-time
           example: "2026-11-12T19:00:00Z"
+
+    Ticket:
+      type: object
+      description: Entidad completa de un ticket tal como la devuelve la API.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "3384504f-76f0-4890-ae4e-c0460d89a178"
+        cliente_id:
+          type: string
+          format: uuid
+          example: "4196cbe5-f509-4009-acb0-7311c58359c0"
+        operario_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Nulo mientras el ticket esté en estado CREADO.
+          example: "f9f6a086-06eb-4f2a-a82c-21a9a52eb8ef"
+        servicio_id:
+          type: integer
+          example: 1
+        estado:
+          type: string
+          enum: [CREADO, ASIGNADO, EN_CAMINO, EN_PROGRESO, FINALIZADO, CANCELADO]
+          example: "ASIGNADO"
+        direccion:
+          type: string
+          example: "Av. de Mayo 900, CABA"
+        descripcion_problema:
+          type: string
+          example: "Caño roto en el baño."
+        precio_final:
+          type: number
+          format: float
+          nullable: true
+          description: Nulo hasta que el ticket se finaliza.
+          example: 25000.00
+        metodo_pago:
+          type: string
+          nullable: true
+          enum: [EFECTIVO, QR, TRANSFERENCIA]
+          example: "EFECTIVO"
+        evidencia_url:
+          type: string
+          format: uri
+          nullable: true
+          example: "https://storage.midominio.com/evidencia/ticket_a1b2c3d4.jpg"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-18T22:55:34Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-19T19:08:56Z"
+
+    TicketListResponse:
+      type: object
+      description: Envoltorio de la lista de tickets del usuario autenticado.
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+
+    Service:
+      type: object
+      description: Servicio del catálogo de la plataforma.
+      properties:
+        id:
+          type: integer
+          example: 1
+        nombre:
+          type: string
+          example: "Plomería"
+        descripcion:
+          type: string
+          nullable: true
+          example: "Reparaciones generales de plomería"
+        tarifa_base:
+          type: number
+          format: float
+          example: 15000.00
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-18T18:17:10Z"
 
     TicketDisponible:
       type: object
