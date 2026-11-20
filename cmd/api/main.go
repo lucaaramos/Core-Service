@@ -13,6 +13,7 @@ import (
 	authDelivery "core-service/internal/auth/delivery/http"
 	authRepo "core-service/internal/auth/infrastructure"
 	authUsecase "core-service/internal/auth/usecase"
+	"core-service/internal/config"
 	serviceDelivery "core-service/internal/service/delivery/http"
 	serviceRepo "core-service/internal/service/infrastructure"
 	serviceUsecase "core-service/internal/service/usecase"
@@ -21,6 +22,7 @@ import (
 	ticketUsecase "core-service/internal/ticket/usecase"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -36,6 +38,8 @@ func main() {
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET no está definido en las variables de entorno")
 	}
+
+	cfg := config.Load()
 
 	// Cadena de conexión a PostgreSQL
 	dsn := os.Getenv("DATABASE_URL")
@@ -70,6 +74,15 @@ func main() {
 
 	app := fiber.New(fiber.Config{AppName: "Core-Service API (MVP)"})
 	app.Use(logger.New())
+
+	// CORS: permite el frontend local. With AllowCredentials=true los orígenes deben ser
+	// explícitos (nunca "*"), por eso config.Load garantiza una lista concreta.
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     cfg.CORSAllowOrigins,
+		AllowMethods:     "GET,POST,PATCH,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+		AllowCredentials: true,
+	}))
 
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "UP"})
