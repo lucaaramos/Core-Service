@@ -96,8 +96,8 @@ func main() {
 
 	v1 := app.Group("/api/v1")
 
-	// Rutas públicas de autenticación
-	authDelivery.NewAuthHandler(v1, authUC)
+	// Rutas públicas de autenticación y protegidas de perfil (/users/me)
+	authDelivery.NewAuthHandler(v1, authUC, jwtSecret)
 
 	// Rutas del catálogo de servicios (requieren autenticación)
 	serviceHandler := serviceDelivery.NewServiceHandler(serviceUC)
