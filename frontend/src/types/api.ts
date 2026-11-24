@@ -61,6 +61,16 @@ export interface Ticket {
   updated_at: string
 }
 
+export interface CreateTicketRequest {
+  servicio_id: number
+  direccion: string
+  descripcion_problema: string
+}
+
+export interface MessageResponse {
+  message: string
+}
+
 export interface TicketDisponible {
   id: string
   servicio: string
