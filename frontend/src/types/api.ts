@@ -46,6 +46,10 @@ export interface Service {
   created_at: string
 }
 
+export interface UpdateMyServicesRequest {
+  servicio_ids: number[]
+}
+
 export interface Ticket {
   id: string
   cliente_id: string

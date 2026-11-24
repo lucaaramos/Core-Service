@@ -2,7 +2,14 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/google/uuid"
+)
+
+var (
+	ErrInvalidServiceIDs = errors.New("uno o más servicios indicados no existen en el catálogo")
 )
 
 // Service representa un servicio del catálogo (tabla services).
@@ -14,8 +21,16 @@ type Service struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// ServiceRepository define el contrato de persistencia para el catálogo de servicios.
+// ServiceRepository define el contrato de persistencia para el catálogo de servicios
+// y las especialidades asociadas a cada operario.
 type ServiceRepository interface {
 	// GetAll devuelve todos los servicios del catálogo ordenados por id ascendente.
 	GetAll(ctx context.Context) ([]Service, error)
+
+	// GetByOperarioID devuelve los servicios asociados al operario ordenados por id ascendente.
+	GetByOperarioID(ctx context.Context, operarioID uuid.UUID) ([]Service, error)
+
+	// ReplaceOperarioServices reemplaza de forma atómica e idempotente las especialidades
+	// del operario validando previamente que todos los IDs existan en services.
+	ReplaceOperarioServices(ctx context.Context, operarioID uuid.UUID, serviceIDs []int) ([]Service, error)
 }

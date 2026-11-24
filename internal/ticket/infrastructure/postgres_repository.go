@@ -162,17 +162,19 @@ func (r *PostgresTicketRepository) FindByID(ctx context.Context, id uuid.UUID) (
 	return m.toDomain()
 }
 
-// GetAvailable devuelve los tickets disponibles en la bolsa de trabajo (CREADO y sin operario).
-func (r *PostgresTicketRepository) GetAvailable(ctx context.Context) ([]domain.AvailableTicket, error) {
+// GetAvailable devuelve los tickets disponibles en la bolsa de trabajo (CREADO y sin operario)
+// filtrados por las especialidades registradas del operario.
+func (r *PostgresTicketRepository) GetAvailable(ctx context.Context, operarioID uuid.UUID) ([]domain.AvailableTicket, error) {
 	query := `
 		SELECT t.id, s.nombre, t.direccion, t.descripcion_problema, s.tarifa_base, t.created_at
 		FROM tickets t
 		INNER JOIN services s ON s.id = t.servicio_id
-		WHERE t.estado = $1 AND t.operario_id IS NULL
+		INNER JOIN operario_services os ON os.servicio_id = t.servicio_id AND os.operario_id = $1
+		WHERE t.estado = $2 AND t.operario_id IS NULL
 		ORDER BY t.created_at ASC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, string(domain.StateCreado))
+	rows, err := r.db.QueryContext(ctx, query, operarioID, string(domain.StateCreado))
 	if err != nil {
 		return nil, fmt.Errorf("error consultando tickets disponibles: %w", err)
 	}
@@ -268,12 +270,36 @@ func (r *PostgresTicketRepository) List(ctx context.Context, filter domain.Ticke
 	return tickets, nil
 }
 
-// AssignOperario maneja la concurrencia al aceptar un ticket mediante la cláusula WHERE estado = 'CREADO'.
+// HasOperarioSpecialty verifica si el operario tiene asignado el servicio indicado en operario_services.
+func (r *PostgresTicketRepository) HasOperarioSpecialty(ctx context.Context, operarioID uuid.UUID, servicioID int) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1
+			FROM operario_services
+			WHERE operario_id = $1 AND servicio_id = $2
+		)
+	`
+
+	var exists bool
+	if err := r.db.QueryRowContext(ctx, query, operarioID, servicioID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("error consultando especialidad de operario: %w", err)
+	}
+
+	return exists, nil
+}
+
+// AssignOperario maneja la concurrencia al aceptar un ticket mediante la cláusula WHERE estado = 'CREADO'
+// y asegura atómicamente que el operario conserve la especialidad requerida.
 func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID) error {
 	query := `
 		UPDATE tickets
 		SET operario_id = $1, estado = $2, updated_at = NOW()
 		WHERE id = $3 AND estado = $4
+		  AND EXISTS (
+			SELECT 1
+			FROM operario_services os
+			WHERE os.operario_id = $1 AND os.servicio_id = tickets.servicio_id
+		  )
 	`
 
 	result, err := r.db.ExecContext(ctx, query, operarioID, string(domain.StateAsignado), ticketID, string(domain.StateCreado))
@@ -287,15 +313,22 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 	}
 
 	if rowsAffected == 0 {
-		// Validar si el ticket existe o si ya fue tomado por otro operario (no está en CREADO)
-		var exists bool
-		checkQuery := `SELECT EXISTS(SELECT 1 FROM tickets WHERE id = $1)`
-		if err := r.db.QueryRowContext(ctx, checkQuery, ticketID).Scan(&exists); err != nil {
+		// Validar si el ticket existe, si falta la especialidad o si ya fue tomado por otro operario
+		var servicioID int
+		checkQuery := `SELECT servicio_id FROM tickets WHERE id = $1`
+		if err := r.db.QueryRowContext(ctx, checkQuery, ticketID).Scan(&servicioID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return domain.ErrTicketNotFound
+			}
 			return fmt.Errorf("error verificando existencia del ticket: %w", err)
 		}
 
-		if !exists {
-			return domain.ErrTicketNotFound
+		hasSpecialty, err := r.HasOperarioSpecialty(ctx, operarioID, servicioID)
+		if err != nil {
+			return err
+		}
+		if !hasSpecialty {
+			return domain.ErrOperarioMissingSpecialty
 		}
 
 		return domain.ErrTicketAlreadyAssigned

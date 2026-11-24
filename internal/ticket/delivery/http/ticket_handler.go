@@ -68,9 +68,14 @@ func (h *TicketHandler) ListTickets(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(tickets)
 }
 
-// GetAvailableTickets lista la bolsa de trabajo para los operarios.
+// GetAvailableTickets lista la bolsa de trabajo filtrada según las especialidades del operario.
 func (h *TicketHandler) GetAvailableTickets(c *fiber.Ctx) error {
-	tickets, err := h.uc.GetAvailableTickets(c.UserContext())
+	operarioID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "operario no autenticado"})
+	}
+
+	tickets, err := h.uc.GetAvailableTickets(c.UserContext(), operarioID)
 	if err != nil {
 		return h.handleError(c, err)
 	}
@@ -247,7 +252,8 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, domain.ErrTicketNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
-	case errors.Is(err, domain.ErrTicketAccessDenied):
+	case errors.Is(err, domain.ErrTicketAccessDenied),
+		errors.Is(err, domain.ErrOperarioMissingSpecialty):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})

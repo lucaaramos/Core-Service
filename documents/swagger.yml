@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.3.0
+  version: 1.4.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -28,6 +28,8 @@ tags:
     description: Endpoints disponibles para OPERARIO y ADMIN
   - name: Servicios
     description: Catálogo de servicios ofrecidos por la plataforma
+  - name: Operarios
+    description: Configuración de especialidades (oficios) del operario autenticado
 paths:
   /api/v1/auth/register:
     post:
@@ -225,15 +227,21 @@ paths:
 
   /api/v1/tickets/disponibles:
     get:
-      summary: Listar Bolsa de Trabajo
-      description: Devuelve los tickets en estado CREADO sin asignar. Requiere rol OPERARIO.
+      summary: Listar Bolsa de Trabajo (filtrada por especialidades)
+      description: |
+        Devuelve los tickets en estado **CREADO** sin asignar cuyo `servicio_id` coincide
+        con alguna de las especialidades registradas por el operario autenticado (`operario_services`).
+        Requiere rol **OPERARIO**.
+
+        Si el operario aún no configuró especialidades o no hay tickets disponibles para sus
+        oficios, devuelve `[]` (`200 OK`).
       tags:
         - Tickets (Operario)
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Lista de tickets disponibles
+          description: Lista de tickets disponibles para las especialidades del operario ([] si no hay ninguno)
           content:
             application/json:
               schema:
@@ -248,6 +256,101 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/operarios/me/servicios:
+    get:
+      summary: Listar Mis Especialidades
+      description: |
+        Devuelve los servicios (oficios) configurados por el operario autenticado,
+        ordenados por `id` ascendente. Requiere exclusivamente rol **OPERARIO**.
+
+        Si el operario aún no seleccionó ninguna especialidad, devuelve `[]` (`200 OK`).
+      tags:
+        - Operarios
+        - Servicios
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Lista de especialidades del operario
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Actualizar Mis Especialidades
+      description: |
+        Reemplaza de forma idempotente y atómica (dentro de una transacción SQL) la lista
+        de especialidades asociadas al operario autenticado. Requiere exclusivamente rol **OPERARIO**.
+
+        - Valida que todos los IDs enviados en `servicio_ids` existan en el catálogo `services`
+          (si alguno no existe o el body es inválido, devuelve `400 Bad Request` sin aplicar cambios).
+        - Enviar `{"servicio_ids": []}` limpia todas las especialidades del operario.
+        - Devuelve la lista actualizada de objetos `Service`.
+      tags:
+        - Operarios
+        - Servicios
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperarioActualizarServiciosRequest'
+      responses:
+        '200':
+          description: Especialidades actualizadas exitosamente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
+        '400':
+          description: Cuerpo de solicitud inválido o algún servicio_id no existe en el catálogo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
           content:
             application/json:
               schema:
@@ -296,6 +399,10 @@ paths:
         a nivel de base de datos: la actualización solo se aplica si el ticket sigue
         en estado **CREADO**. Requiere rol **OPERARIO**.
 
+        Validación de especialidad: el operario debe tener registrado el `servicio_id`
+        del ticket en sus especialidades (`PUT /api/v1/operarios/me/servicios`); de lo
+        contrario se rechaza con `403 Forbidden`.
+
         El `operario_id` **no** se envía en el body: se obtiene del claim `user_id` del JWT.
         Si otro operario tomó el ticket primero, se devuelve `409 Conflict`.
       tags:
@@ -330,7 +437,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: El usuario autenticado no tiene rol OPERARIO
+          description: El usuario no tiene rol OPERARIO o no posee la especialidad requerida para el ticket
           content:
             application/json:
               schema:
@@ -876,6 +983,18 @@ components:
           type: string
           format: date-time
           example: "2026-11-18T18:17:10Z"
+
+    OperarioActualizarServiciosRequest:
+      type: object
+      required:
+        - servicio_ids
+      properties:
+        servicio_ids:
+          type: array
+          description: Lista de IDs de servicios del catálogo que realiza el operario (puede ser [] para limpiar).
+          items:
+            type: integer
+          example: [1, 2]
 
     TicketDisponible:
       type: object

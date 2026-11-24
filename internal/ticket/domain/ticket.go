@@ -34,8 +34,9 @@ var (
 	ErrTicketAlreadyAssigned  = errors.New("el ticket ya fue asignado a otro operario")
 	ErrInvalidStateTransition = errors.New("transición de estado inválida")
 	ErrInvalidTicketState     = errors.New("estado de ticket inválido")
-	ErrTicketAccessDenied     = errors.New("no tenés permiso para acceder a este ticket")
-	ErrInvalidEvidenceType    = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
+	ErrTicketAccessDenied        = errors.New("no tenés permiso para acceder a este ticket")
+	ErrOperarioMissingSpecialty  = errors.New("no tenés registrada la especialidad requerida para aceptar este trabajo")
+	ErrInvalidEvidenceType       = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
 )
 
 // IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.
@@ -92,8 +93,12 @@ type Repository interface {
 	// List devuelve los tickets que cumplen con los filtros indicados, ordenados por created_at DESC.
 	List(ctx context.Context, filter TicketFilter) ([]Ticket, error)
 
-	// GetAvailable devuelve los tickets en estado CREADO y sin operario (bolsa de trabajo).
-	GetAvailable(ctx context.Context) ([]AvailableTicket, error)
+	// GetAvailable devuelve los tickets en estado CREADO y sin operario (bolsa de trabajo)
+	// filtrados por las especialidades registradas del operario.
+	GetAvailable(ctx context.Context, operarioID uuid.UUID) ([]AvailableTicket, error)
+
+	// HasOperarioSpecialty indica si el operario tiene registrada la especialidad servicioID.
+	HasOperarioSpecialty(ctx context.Context, operarioID uuid.UUID, servicioID int) (bool, error)
 
 	// FindByID busca un ticket por su identificador único UUID.
 	FindByID(ctx context.Context, id uuid.UUID) (*Ticket, error)

@@ -17,7 +17,7 @@ type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
 	ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error)
 	GetTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) (*domain.Ticket, error)
-	GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error)
+	GetAvailableTickets(ctx context.Context, operarioID uuid.UUID) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
 	UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error
 	GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (uploadURL string, publicURL string, err error)
@@ -88,9 +88,10 @@ func (u *ticketUsecase) CreateTicket(ctx context.Context, clienteID uuid.UUID, s
 	return t, nil
 }
 
-// GetAvailableTickets devuelve la bolsa de trabajo para los operarios (tickets CREADO sin asignar).
-func (u *ticketUsecase) GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error) {
-	tickets, err := u.repo.GetAvailable(ctx)
+// GetAvailableTickets devuelve la bolsa de trabajo para el operario autenticado,
+// filtrando tickets CREADO sin asignar según sus especialidades registradas.
+func (u *ticketUsecase) GetAvailableTickets(ctx context.Context, operarioID uuid.UUID) ([]domain.AvailableTicket, error) {
+	tickets, err := u.repo.GetAvailable(ctx, operarioID)
 	if err != nil {
 		return nil, fmt.Errorf("error al obtener tickets disponibles: %w", err)
 	}
@@ -98,8 +99,22 @@ func (u *ticketUsecase) GetAvailableTickets(ctx context.Context) ([]domain.Avail
 	return tickets, nil
 }
 
-// AssignTicket delega al repositorio la asignación segura del operario (control de concurrencia).
+// AssignTicket valida que el ticket exista y que el operario posea la especialidad requerida,
+// y delega al repositorio la asignación segura con control de concurrencia.
 func (u *ticketUsecase) AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error {
+	ticket, err := u.repo.FindByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+
+	hasSpecialty, err := u.repo.HasOperarioSpecialty(ctx, operarioID, ticket.ServicioID)
+	if err != nil {
+		return fmt.Errorf("error verificando especialidad del operario: %w", err)
+	}
+	if !hasSpecialty {
+		return domain.ErrOperarioMissingSpecialty
+	}
+
 	if err := u.repo.AssignOperario(ctx, ticketID, operarioID); err != nil {
 		return err
 	}
