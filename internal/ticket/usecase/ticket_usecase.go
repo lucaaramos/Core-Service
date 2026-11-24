@@ -3,8 +3,10 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"core-service/internal/storage"
 	"core-service/internal/ticket/domain"
 
 	"github.com/google/uuid"
@@ -18,6 +20,7 @@ type TicketUsecase interface {
 	GetAvailableTickets(ctx context.Context) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
 	UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error
+	GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (uploadURL string, publicURL string, err error)
 	FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
 	CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error
 }
@@ -52,12 +55,16 @@ func (u *ticketUsecase) ListTickets(ctx context.Context, userID uuid.UUID, rol s
 }
 
 type ticketUsecase struct {
-	repo domain.Repository
+	repo    domain.Repository
+	storage storage.ObjectStorage
 }
 
 // NewTicketUsecase crea una nueva instancia del caso de uso de tickets.
-func NewTicketUsecase(repo domain.Repository) TicketUsecase {
-	return &ticketUsecase{repo: repo}
+func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorage) TicketUsecase {
+	return &ticketUsecase{
+		repo:    repo,
+		storage: objectStorage,
+	}
 }
 
 // CreateTicket instancia un nuevo ticket en estado CREADO y lo persiste.
@@ -152,6 +159,46 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID 
 	}
 
 	return u.repo.UpdateState(ctx, ticketID, newState)
+}
+
+// GenerateEvidenceUploadURL valida que el tipo MIME sea una imagen permitida, que el
+// ticket exista, pertenezca al operario autenticado y esté EN_PROGRESO, y genera una
+// Presigned PUT URL con clave única para subir la foto de evidencia a S3/MinIO.
+func (u *ticketUsecase) GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (string, string, error) {
+	normalizedType := strings.TrimSpace(strings.ToLower(contentType))
+
+	var ext string
+	switch normalizedType {
+	case "image/jpeg":
+		ext = "jpg"
+	case "image/png":
+		ext = "png"
+	case "image/webp":
+		ext = "webp"
+	default:
+		return "", "", domain.ErrInvalidEvidenceType
+	}
+
+	ticket, err := u.repo.FindByID(ctx, ticketID)
+	if err != nil {
+		return "", "", err
+	}
+
+	if ticket.OperarioID == nil || *ticket.OperarioID != userID {
+		return "", "", domain.ErrTicketAccessDenied
+	}
+
+	if ticket.Estado != domain.StateEnProgreso {
+		return "", "", fmt.Errorf("%w: el ticket debe estar EN_PROGRESO para subir evidencia, estado actual: %s", domain.ErrInvalidStateTransition, ticket.Estado)
+	}
+
+	key := fmt.Sprintf("tickets/%s/%s.%s", ticketID.String(), uuid.NewString(), ext)
+	uploadURL, publicURL, err := u.storage.GenerateUploadURL(ctx, key, normalizedType)
+	if err != nil {
+		return "", "", fmt.Errorf("error generando URL de subida de evidencia: %w", err)
+	}
+
+	return uploadURL, publicURL, nil
 }
 
 // FinishTicket valida que el ticket esté en progreso y que el operario autenticado sea el

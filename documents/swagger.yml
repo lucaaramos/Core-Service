@@ -476,6 +476,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/tickets/{id}/evidencia/upload-url:
+    post:
+      summary: Generar Presigned URL para Subir Evidencia
+      description: |
+        Genera una URL prefirmada (`PUT`) con validez de 5 minutos para subir directamente
+        a MinIO/S3 la foto de evidencia del trabajo. Requiere rol **OPERARIO**.
+
+        Validaciones:
+        - `content_type` debe ser `image/jpeg`, `image/png` o `image/webp`.
+        - El operario autenticado debe ser el **operario asignado** al ticket (`403 Forbidden` si no).
+        - El ticket debe estar en estado **EN_PROGRESO** (`400 Bad Request` si no).
+
+        Una vez subido el archivo mediante `PUT` a `upload_url`, el frontend envía `public_url`
+        como `evidencia_url` en `POST /api/v1/tickets/{id}/finalizar`.
+      tags:
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketEvidenciaUploadUrlRequest'
+      responses:
+        '200':
+          description: URL prefirmada generada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketEvidenciaUploadUrlResponse'
+        '400':
+          description: Tipo de archivo no soportado, ticket fuera de EN_PROGRESO o body inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario no es el operario asignado (o no tiene rol OPERARIO)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/tickets/{id}/finalizar:
     post:
       summary: Registrar Evidencia y Cobro
@@ -839,6 +909,33 @@ components:
           enum: [EN_CAMINO, EN_PROGRESO]
           description: FINALIZADO se gestiona únicamente vía /finalizar; CANCELADO vía /cancelar.
           example: "EN_CAMINO"
+
+    TicketEvidenciaUploadUrlRequest:
+      type: object
+      required:
+        - content_type
+      properties:
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, image/webp]
+          example: "image/jpeg"
+
+    TicketEvidenciaUploadUrlResponse:
+      type: object
+      required:
+        - upload_url
+        - public_url
+      properties:
+        upload_url:
+          type: string
+          format: uri
+          description: URL prefirmada temporal (5 min) para subir el binario vía HTTP PUT.
+          example: "http://localhost:9000/evidencias/tickets/3384504f/9b1deb4d.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&..."
+        public_url:
+          type: string
+          format: uri
+          description: URL pública final del objeto para enviar en POST /tickets/{id}/finalizar.
+          example: "http://localhost:9000/evidencias/tickets/3384504f/9b1deb4d.jpg"
 
     TicketFinalizarRequest:
       type: object

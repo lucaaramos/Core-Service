@@ -79,6 +79,15 @@ export interface FinishTicketRequest {
   evidencia_url?: string
 }
 
+export interface EvidenceUploadUrlRequest {
+  content_type: string
+}
+
+export interface EvidenceUploadUrlResponse {
+  upload_url: string
+  public_url: string
+}
+
 export interface MessageResponse {
   message: string
 }

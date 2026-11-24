@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
 } from 'react'
 import { ApiError } from '../api/client'
@@ -15,7 +16,9 @@ import {
   getAvailableTickets,
   getTicketById,
   getTickets,
+  requestEvidenceUploadUrl,
   updateTicketState,
+  uploadFileToPresignedUrl,
 } from '../api/tickets'
 import { Navbar } from '../components/Navbar'
 import { StatusBadge } from '../components/StatusBadge'
@@ -53,6 +56,21 @@ const STATUS_FILTERS: Array<{ value: OperarioStatusFilter; label: string }> = [
 ]
 
 const METODO_PAGO_OPTIONS: MetodoPago[] = ['EFECTIVO', 'QR', 'TRANSFERENCIA']
+const ALLOWED_EVIDENCE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+])
+const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024 // 5 MB
+
+type FinishStep = 'IDLE' | 'UPLOADING' | 'FINISHING'
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
 
 function isCancellable(estado: TicketStatus): boolean {
   return estado !== 'FINALIZADO' && estado !== 'CANCELADO'
@@ -99,9 +117,14 @@ export function OperarioDashboardPage() {
   const [precioFinalInput, setPrecioFinalInput] = useState('')
   const [metodoPagoInput, setMetodoPagoInput] =
     useState<MetodoPago>('EFECTIVO')
-  const [evidenciaUrlInput, setEvidenciaUrlInput] = useState('')
-  const [finishing, setFinishing] = useState(false)
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null)
+  const [evidencePreviewUrl, setEvidencePreviewUrl] = useState<string | null>(
+    null,
+  )
+  const [finishStep, setFinishStep] = useState<FinishStep>('IDLE')
   const [finishError, setFinishError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const finishing = finishStep !== 'IDLE'
 
   // Modal de confirmación de cancelación
   const [ticketToCancel, setTicketToCancel] = useState<Ticket | null>(null)
@@ -254,6 +277,15 @@ export function OperarioDashboardPage() {
     }
   }, [])
 
+  // Limpiar Object URL de vista previa al cambiar o desmontar
+  useEffect(() => {
+    return () => {
+      if (evidencePreviewUrl) {
+        URL.revokeObjectURL(evidencePreviewUrl)
+      }
+    }
+  }, [evidencePreviewUrl])
+
   // Cerrar modales con Escape
   useEffect(() => {
     if (!detailTicketId && !ticketToFinish && !ticketToCancel) return
@@ -264,6 +296,8 @@ export function OperarioDashboardPage() {
         setTicketToCancel(null)
         setCancelError(null)
       } else if (ticketToFinish && !finishing) {
+        setEvidenceFile(null)
+        setEvidencePreviewUrl(null)
         setTicketToFinish(null)
         setFinishError(null)
       } else if (detailTicketId) {
@@ -338,17 +372,53 @@ export function OperarioDashboardPage() {
     }
   }
 
+  function clearSelectedEvidence() {
+    setEvidenceFile(null)
+    setEvidencePreviewUrl(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  function handleEvidenceFileChange(event: ChangeEvent<HTMLInputElement>) {
+    setFinishError(null)
+    const file = event.target.files?.[0] ?? null
+
+    if (!file) {
+      clearSelectedEvidence()
+      return
+    }
+
+    if (!ALLOWED_EVIDENCE_TYPES.has(file.type)) {
+      clearSelectedEvidence()
+      setFinishError(
+        'Formato inválido. Seleccioná una imagen JPG, PNG o WEBP.',
+      )
+      return
+    }
+
+    if (file.size > MAX_EVIDENCE_BYTES) {
+      clearSelectedEvidence()
+      setFinishError('La imagen supera el tamaño máximo permitido de 5 MB.')
+      return
+    }
+
+    setEvidenceFile(file)
+    setEvidencePreviewUrl(URL.createObjectURL(file))
+  }
+
   function openFinishModal(ticket: Ticket) {
     const baseRate = servicesMap.get(ticket.servicio_id)?.tarifa_base
     setPrecioFinalInput(baseRate ? String(baseRate) : '')
     setMetodoPagoInput('EFECTIVO')
-    setEvidenciaUrlInput('')
+    clearSelectedEvidence()
     setFinishError(null)
     setTicketToFinish(ticket)
   }
 
   function closeFinishModal() {
     if (finishing) return
+    clearSelectedEvidence()
     setTicketToFinish(null)
     setFinishError(null)
   }
@@ -364,23 +434,30 @@ export function OperarioDashboardPage() {
       return
     }
 
-    const trimmedEvidencia = evidenciaUrlInput.trim()
-    if (trimmedEvidencia && !isSafeHttpUrl(trimmedEvidencia)) {
-      setFinishError('La URL de evidencia debe comenzar con http:// o https://.')
-      return
-    }
-
-    setFinishing(true)
     setActionError(null)
     setFeedbackMessage(null)
 
     try {
+      let uploadedPublicUrl: string | undefined
+
+      if (evidenceFile) {
+        setFinishStep('UPLOADING')
+        const { upload_url, public_url } = await requestEvidenceUploadUrl(
+          ticketToFinish.id,
+          evidenceFile.type,
+        )
+        await uploadFileToPresignedUrl(upload_url, evidenceFile)
+        uploadedPublicUrl = public_url
+      }
+
+      setFinishStep('FINISHING')
       const res = await finishTicket(ticketToFinish.id, {
         precio_final: parsedPrice,
         metodo_pago: metodoPagoInput,
-        ...(trimmedEvidencia ? { evidencia_url: trimmedEvidencia } : {}),
+        ...(uploadedPublicUrl ? { evidencia_url: uploadedPublicUrl } : {}),
       })
       const finishedId = ticketToFinish.id
+      clearSelectedEvidence()
       setTicketToFinish(null)
       setFeedbackMessage(res.message || 'Trabajo finalizado exitosamente.')
       await loadMyTickets(statusFilter)
@@ -392,7 +469,7 @@ export function OperarioDashboardPage() {
         err instanceof Error ? err.message : 'No se pudo finalizar el trabajo',
       )
     } finally {
-      setFinishing(false)
+      setFinishStep('IDLE')
     }
   }
 
@@ -1026,24 +1103,41 @@ export function OperarioDashboardPage() {
                         </dd>
                       </div>
                       {detailTicket.evidencia_url && (
-                        <div className="flex items-center justify-between gap-2 border-t border-emerald-500/20 pt-2.5">
-                          <dt className="text-slate-400">Evidencia</dt>
-                          <dd>
-                            {isSafeHttpUrl(detailTicket.evidencia_url) ? (
-                              <a
-                                href={detailTicket.evidencia_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium text-emerald-400 underline hover:text-emerald-300"
-                              >
-                                Ver evidencia ↗
-                              </a>
-                            ) : (
-                              <span className="break-all text-xs text-slate-300">
-                                {detailTicket.evidencia_url}
-                              </span>
-                            )}
-                          </dd>
+                        <div className="border-t border-emerald-500/20 pt-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <dt className="text-slate-400">Evidencia</dt>
+                            <dd>
+                              {isSafeHttpUrl(detailTicket.evidencia_url) ? (
+                                <a
+                                  href={detailTicket.evidencia_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium text-emerald-400 underline hover:text-emerald-300"
+                                >
+                                  Abrir tamaño completo ↗
+                                </a>
+                              ) : (
+                                <span className="break-all text-xs text-slate-300">
+                                  {detailTicket.evidencia_url}
+                                </span>
+                              )}
+                            </dd>
+                          </div>
+                          {isSafeHttpUrl(detailTicket.evidencia_url) && (
+                            <a
+                              href={detailTicket.evidencia_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2.5 block"
+                            >
+                              <img
+                                src={detailTicket.evidencia_url}
+                                alt="Evidencia del trabajo finalizado"
+                                loading="lazy"
+                                className="max-h-56 w-full rounded-lg border border-emerald-500/20 bg-slate-950 object-cover transition hover:opacity-90"
+                              />
+                            </a>
+                          )}
                         </div>
                       )}
                     </dl>
@@ -1150,21 +1244,49 @@ export function OperarioDashboardPage() {
 
               <div>
                 <label
-                  htmlFor="evidencia-url"
+                  htmlFor="evidencia-file"
                   className="mb-1.5 block text-sm font-medium text-slate-300"
                 >
-                  URL de evidencia{' '}
-                  <span className="font-normal text-slate-500">(opcional)</span>
+                  Foto de evidencia{' '}
+                  <span className="font-normal text-slate-500">
+                    (opcional · JPG, PNG o WEBP, máx. 5 MB)
+                  </span>
                 </label>
                 <input
-                  id="evidencia-url"
-                  type="url"
+                  ref={fileInputRef}
+                  id="evidencia-file"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
                   disabled={finishing}
-                  value={evidenciaUrlInput}
-                  onChange={(event) => setEvidenciaUrlInput(event.target.value)}
-                  placeholder="https://storage.midominio.com/evidencia/foto.jpg"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                  onChange={handleEvidenceFileChange}
+                  className="block w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-300 file:mr-3 file:cursor-pointer file:rounded-l-lg file:border-0 file:bg-slate-800 file:px-3.5 file:py-2.5 file:text-xs file:font-semibold file:text-emerald-300 hover:file:bg-slate-700 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                 />
+
+                {evidenceFile && evidencePreviewUrl && (
+                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-medium text-slate-200">
+                        {evidenceFile.name}{' '}
+                        <span className="text-slate-500">
+                          ({formatFileSize(evidenceFile.size)})
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        disabled={finishing}
+                        onClick={clearSelectedEvidence}
+                        className="shrink-0 font-medium text-rose-300 hover:text-rose-200 disabled:opacity-60"
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                    <img
+                      src={evidencePreviewUrl}
+                      alt="Vista previa de evidencia"
+                      className="max-h-44 w-full rounded-lg border border-slate-800 object-cover"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-2.5 border-t border-slate-800 pt-4">
@@ -1187,7 +1309,11 @@ export function OperarioDashboardPage() {
                       className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
                     />
                   )}
-                  {finishing ? 'Finalizando…' : 'Confirmar finalización'}
+                  {finishStep === 'UPLOADING'
+                    ? 'Subiendo evidencia…'
+                    : finishStep === 'FINISHING'
+                      ? 'Finalizando…'
+                      : 'Confirmar finalización'}
                 </button>
               </div>
             </form>

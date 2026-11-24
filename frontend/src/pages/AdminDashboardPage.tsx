@@ -999,24 +999,41 @@ export function AdminDashboardPage() {
                         </dd>
                       </div>
                       {detailTicket.evidencia_url && (
-                        <div className="flex items-center justify-between gap-2 border-t border-emerald-500/20 pt-2.5">
-                          <dt className="text-slate-400">Evidencia</dt>
-                          <dd>
-                            {isSafeHttpUrl(detailTicket.evidencia_url) ? (
-                              <a
-                                href={detailTicket.evidencia_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium text-emerald-400 underline hover:text-emerald-300"
-                              >
-                                Ver evidencia ↗
-                              </a>
-                            ) : (
-                              <span className="break-all text-xs text-slate-300">
-                                {detailTicket.evidencia_url}
-                              </span>
-                            )}
-                          </dd>
+                        <div className="border-t border-emerald-500/20 pt-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <dt className="text-slate-400">Evidencia</dt>
+                            <dd>
+                              {isSafeHttpUrl(detailTicket.evidencia_url) ? (
+                                <a
+                                  href={detailTicket.evidencia_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium text-emerald-400 underline hover:text-emerald-300"
+                                >
+                                  Abrir tamaño completo ↗
+                                </a>
+                              ) : (
+                                <span className="break-all text-xs text-slate-300">
+                                  {detailTicket.evidencia_url}
+                                </span>
+                              )}
+                            </dd>
+                          </div>
+                          {isSafeHttpUrl(detailTicket.evidencia_url) && (
+                            <a
+                              href={detailTicket.evidencia_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2.5 block"
+                            >
+                              <img
+                                src={detailTicket.evidencia_url}
+                                alt="Evidencia del trabajo finalizado"
+                                loading="lazy"
+                                className="max-h-56 w-full rounded-lg border border-emerald-500/20 bg-slate-950 object-cover transition hover:opacity-90"
+                              />
+                            </a>
+                          )}
                         </div>
                       )}
                     </dl>

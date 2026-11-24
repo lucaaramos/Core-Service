@@ -17,6 +17,7 @@ import (
 	serviceDelivery "core-service/internal/service/delivery/http"
 	serviceRepo "core-service/internal/service/infrastructure"
 	serviceUsecase "core-service/internal/service/usecase"
+	"core-service/internal/storage"
 	ticketDelivery "core-service/internal/ticket/delivery/http"
 	ticketRepo "core-service/internal/ticket/infrastructure"
 	ticketUsecase "core-service/internal/ticket/usecase"
@@ -63,11 +64,16 @@ func main() {
 	log.Println("Conexión exitosa a la base de datos PostgreSQL")
 
 	// Wiring (Clean Architecture)
+	s3Storage, err := storage.NewS3Storage(context.Background(), cfg)
+	if err != nil {
+		log.Fatalf("Error inicializando almacenamiento S3: %v", err)
+	}
+
 	authRepoInstance := authRepo.NewPostgresAuthRepository(db)
 	authUC := authUsecase.NewAuthUsecase(authRepoInstance)
 
 	ticketRepoInstance := ticketRepo.NewPostgresTicketRepository(db)
-	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance)
+	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance, s3Storage)
 
 	serviceRepoInstance := serviceRepo.NewPostgresServiceRepository(db)
 	serviceUC := serviceUsecase.NewServiceUsecase(serviceRepoInstance)

@@ -38,6 +38,10 @@ type finishTicketRequest struct {
 	EvidenciaURL string  `json:"evidencia_url"`
 }
 
+type evidenceUploadURLRequest struct {
+	ContentType string `json:"content_type"`
+}
+
 // ListTickets lista los tickets visibles según el rol del usuario autenticado.
 // Acepta el query param opcional ?estado=CREADO|ASIGNADO|EN_CAMINO|EN_PROGRESO|FINALIZADO|CANCELADO.
 func (h *TicketHandler) ListTickets(c *fiber.Ctx) error {
@@ -163,6 +167,34 @@ func (h *TicketHandler) UpdateState(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "estado actualizado exitosamente"})
 }
 
+// GenerateEvidenceUploadURL genera una Presigned PUT URL para subir la foto de evidencia a S3/MinIO.
+func (h *TicketHandler) GenerateEvidenceUploadURL(c *fiber.Ctx) error {
+	ticketUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
+	}
+
+	var req evidenceUploadURLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
+	}
+
+	operarioID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "operario no autenticado"})
+	}
+
+	uploadURL, publicURL, err := h.uc.GenerateEvidenceUploadURL(c.UserContext(), ticketUUID, operarioID, req.ContentType)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"upload_url": uploadURL,
+		"public_url": publicURL,
+	})
+}
+
 // FinishTicket registra el cobro y la evidencia, y finaliza el ticket.
 func (h *TicketHandler) FinishTicket(c *fiber.Ctx) error {
 	ticketUUID, err := uuid.Parse(c.Params("id"))
@@ -219,7 +251,9 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case errors.Is(err, domain.ErrInvalidStateTransition), errors.Is(err, domain.ErrInvalidTicketState):
+	case errors.Is(err, domain.ErrInvalidStateTransition),
+		errors.Is(err, domain.ErrInvalidTicketState),
+		errors.Is(err, domain.ErrInvalidEvidenceType):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})
