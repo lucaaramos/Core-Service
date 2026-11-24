@@ -34,6 +34,25 @@ export interface RegisterResponse {
   rol: Role
 }
 
+export interface UserProfile {
+  id: string
+  nombre: string
+  email: string
+  telefono: string
+  rol: Role
+  created_at: string
+}
+
+export interface UpdateProfileRequest {
+  nombre: string
+  telefono: string
+}
+
+export interface ChangePasswordRequest {
+  password_actual: string
+  password_nueva: string
+}
+
 export interface ErrorResponse {
   error: string
 }

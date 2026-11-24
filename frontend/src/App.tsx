@@ -5,6 +5,7 @@ import { AdminDashboardPage } from './pages/AdminDashboardPage'
 import { ClienteDashboardPage } from './pages/ClienteDashboardPage'
 import { LoginPage } from './pages/LoginPage'
 import { OperarioDashboardPage } from './pages/OperarioDashboardPage'
+import { ProfilePage } from './pages/ProfilePage'
 import { RegisterPage } from './pages/RegisterPage'
 
 export default function App() {
@@ -13,6 +14,16 @@ export default function App() {
       {/* Rutas públicas */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+
+      {/* Perfil de usuario (cualquier rol autenticado) */}
+      <Route
+        path="/perfil"
+        element={
+          <ProtectedRoute>
+            <ProfilePage />
+          </ProtectedRoute>
+        }
+      />
 
       {/* Dashboards protegidos por rol */}
       <Route
