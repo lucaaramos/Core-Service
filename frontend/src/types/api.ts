@@ -67,6 +67,18 @@ export interface CreateTicketRequest {
   descripcion_problema: string
 }
 
+export type OperarioNextState = 'EN_CAMINO' | 'EN_PROGRESO'
+
+export interface UpdateTicketStateRequest {
+  nuevo_estado: OperarioNextState
+}
+
+export interface FinishTicketRequest {
+  precio_final: number
+  metodo_pago: MetodoPago
+  evidencia_url?: string
+}
+
 export interface MessageResponse {
   message: string
 }
