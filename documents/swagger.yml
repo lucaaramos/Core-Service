@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -20,6 +20,8 @@ servers:
 tags:
   - name: Auth
     description: Registro e inicio de sesión de usuarios
+  - name: Usuarios
+    description: Consulta y edición del perfil y contraseña del usuario autenticado
   - name: Tickets (Cliente)
     description: Endpoints disponibles para usuarios con rol CLIENTE
   - name: Tickets (Operario)
@@ -104,6 +106,162 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Credenciales inválidas (email inexistente o contraseña incorrecta)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/users/me:
+    get:
+      summary: Obtener Mi Perfil
+      description: |
+        Devuelve los datos públicos del usuario autenticado (`id`, `nombre`, `email`,
+        `telefono`, `rol`, `created_at`). Nunca incluye `password_hash`.
+
+        Disponible para cualquier rol autenticado (**CLIENTE**, **OPERARIO** o **ADMIN**).
+      tags:
+        - Usuarios
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Perfil del usuario autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Rol no autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Actualizar Mi Perfil
+      description: |
+        Actualiza el `nombre` y `telefono` del usuario autenticado y devuelve el perfil
+        actualizado. Valida que `nombre` no esté vacío (`400 Bad Request`).
+
+        Disponible para **CLIENTE**, **OPERARIO** y **ADMIN**.
+      tags:
+        - Usuarios
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioActualizarPerfilRequest'
+      responses:
+        '200':
+          description: Perfil actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          description: El nombre está vacío o los datos enviados son inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Rol no autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/users/me/password:
+    patch:
+      summary: Cambiar Mi Contraseña
+      description: |
+        Cambia la contraseña del usuario autenticado:
+        - Valida que `password_nueva` tenga al menos 6 caracteres (`400 Bad Request`).
+        - Verifica `password_actual` contra el hash bcrypt actual (`401 Unauthorized` si no coincide).
+        - Guarda el nuevo hash bcrypt y devuelve `{ "message": "contraseña actualizada correctamente" }`.
+
+        Disponible para **CLIENTE**, **OPERARIO** y **ADMIN**.
+      tags:
+        - Usuarios
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioCambiarPasswordRequest'
+      responses:
+        '200':
+          description: Contraseña actualizada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: La nueva contraseña tiene menos de 6 caracteres o el body es inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: La contraseña actual es incorrecta o el token es inválido/expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Rol no autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Usuario no encontrado
           content:
             application/json:
               schema:
@@ -867,6 +1025,64 @@ components:
           type: string
           description: JWT firmado (HS256) con expiración de 24 horas.
           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    UserProfile:
+      type: object
+      description: Datos públicos del perfil del usuario autenticado (sin password_hash).
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "4196cbe5-f509-4009-acb0-7311c58359c0"
+        nombre:
+          type: string
+          example: "Juan Pérez"
+        email:
+          type: string
+          format: email
+          example: "juan.perez@example.com"
+        telefono:
+          type: string
+          example: "+54 11 5555-1234"
+        rol:
+          type: string
+          enum: [CLIENTE, OPERARIO, ADMIN]
+          example: "CLIENTE"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-12T19:00:00Z"
+
+    UsuarioActualizarPerfilRequest:
+      type: object
+      required:
+        - nombre
+      properties:
+        nombre:
+          type: string
+          minLength: 1
+          maxLength: 150
+          example: "Juan Ignacio Pérez"
+        telefono:
+          type: string
+          maxLength: 50
+          example: "+54 11 5555-9876"
+
+    UsuarioCambiarPasswordRequest:
+      type: object
+      required:
+        - password_actual
+        - password_nueva
+      properties:
+        password_actual:
+          type: string
+          format: password
+          example: "secret123"
+        password_nueva:
+          type: string
+          format: password
+          minLength: 6
+          example: "nuevaClaveSegura456"
 
     TicketCrearRequest:
       type: object
