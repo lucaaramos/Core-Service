@@ -8,7 +8,7 @@ import {
   type FormEvent,
 } from 'react'
 import { ApiError } from '../api/client'
-import { getServices } from '../api/services'
+import { getMyServices, getServices, updateMyServices } from '../api/services'
 import {
   assignTicket,
   cancelTicket,
@@ -37,7 +37,7 @@ import {
   METODO_PAGO_LABELS,
 } from '../utils/format'
 
-type MainTab = 'BOLSA' | 'MIS_TRABAJOS'
+type MainTab = 'BOLSA' | 'MIS_TRABAJOS' | 'MIS_ESPECIALIDADES'
 type OperarioStatusFilter =
   | 'TODOS'
   | 'ASIGNADO'
@@ -79,8 +79,21 @@ function isCancellable(estado: TicketStatus): boolean {
 export function OperarioDashboardPage() {
   const [activeTab, setActiveTab] = useState<MainTab>('BOLSA')
 
-  // Catálogo de servicios para mapear servicio_id -> nombre
+  // Catálogo de servicios para mapear servicio_id -> nombre y configurar especialidades
   const [services, setServices] = useState<Service[]>([])
+  const [servicesLoading, setServicesLoading] = useState(true)
+  const [servicesError, setServicesError] = useState<string | null>(null)
+
+  // Especialidades del operario autenticado
+  const [myServices, setMyServices] = useState<Service[]>([])
+  const [myServicesLoading, setMyServicesLoading] = useState(true)
+  const [myServicesError, setMyServicesError] = useState<string | null>(null)
+  const [selectedServiceIds, setSelectedServiceIds] = useState<number[]>([])
+  const [savingSpecialties, setSavingSpecialties] = useState(false)
+  const [specialtiesFeedback, setSpecialtiesFeedback] = useState<string | null>(
+    null,
+  )
+  const [specialtiesError, setSpecialtiesError] = useState<string | null>(null)
 
   // Pestaña 1: Bolsa de Trabajo
   const [availableTickets, setAvailableTickets] = useState<TicketDisponible[]>(
@@ -138,6 +151,52 @@ export function OperarioDashboardPage() {
     }
     return map
   }, [services])
+
+  const selectedServiceSet = useMemo(
+    () => new Set(selectedServiceIds),
+    [selectedServiceIds],
+  )
+
+  const hasUnsavedSpecialtyChanges = useMemo(() => {
+    if (selectedServiceIds.length !== myServices.length) return true
+    const savedSet = new Set(myServices.map((s) => s.id))
+    return selectedServiceIds.some((id) => !savedSet.has(id))
+  }, [selectedServiceIds, myServices])
+
+  const loadSpecialtiesAndCatalog = useCallback(async () => {
+    setServicesLoading(true)
+    setServicesError(null)
+    setMyServicesLoading(true)
+    setMyServicesError(null)
+
+    const [catalogRes, myRes] = await Promise.allSettled([
+      getServices(),
+      getMyServices(),
+    ])
+
+    if (catalogRes.status === 'fulfilled') {
+      setServices(catalogRes.value)
+    } else {
+      setServicesError(
+        catalogRes.reason instanceof Error
+          ? catalogRes.reason.message
+          : 'No se pudo cargar el catálogo de servicios',
+      )
+    }
+    setServicesLoading(false)
+
+    if (myRes.status === 'fulfilled') {
+      setMyServices(myRes.value)
+      setSelectedServiceIds(myRes.value.map((s) => s.id))
+    } else {
+      setMyServicesError(
+        myRes.reason instanceof Error
+          ? myRes.reason.message
+          : 'No se pudieron cargar tus especialidades',
+      )
+    }
+    setMyServicesLoading(false)
+  }, [])
 
   const loadAvailableTickets = useCallback(async () => {
     const requestId = ++availableReqIdRef.current
@@ -214,7 +273,7 @@ export function OperarioDashboardPage() {
     }
   }, [])
 
-  // Carga inicial: catálogo de servicios, bolsa de trabajo y mis trabajos
+  // Carga inicial: catálogo de servicios, mis especialidades, bolsa de trabajo y mis trabajos
   useEffect(() => {
     let cancelled = false
 
@@ -224,8 +283,41 @@ export function OperarioDashboardPage() {
           setServices(data)
         }
       })
-      .catch(() => {
-        // Si falla el catálogo, la UI hace fallback a "Servicio #<id>"
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setServicesError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudo cargar el catálogo de servicios',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setServicesLoading(false)
+        }
+      })
+
+    getMyServices()
+      .then((data) => {
+        if (!cancelled) {
+          setMyServices(data)
+          setSelectedServiceIds(data.map((s) => s.id))
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setMyServicesError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudieron cargar tus especialidades',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMyServicesLoading(false)
+        }
       })
 
     const availReqId = ++availableReqIdRef.current
@@ -312,6 +404,64 @@ export function OperarioDashboardPage() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [detailTicketId, ticketToFinish, ticketToCancel, finishing, cancelling])
 
+  function openSpecialtiesSection() {
+    if (!savingSpecialties) {
+      setSelectedServiceIds(myServices.map((s) => s.id))
+      setSpecialtiesFeedback(null)
+      setSpecialtiesError(null)
+    }
+    setActiveTab('MIS_ESPECIALIDADES')
+  }
+
+  function handleToggleSpecialty(serviceId: number) {
+    setSpecialtiesFeedback(null)
+    setSpecialtiesError(null)
+    setSelectedServiceIds((prev) =>
+      prev.includes(serviceId)
+        ? prev.filter((id) => id !== serviceId)
+        : [...prev, serviceId],
+    )
+  }
+
+  function handleSelectAllSpecialties() {
+    setSpecialtiesFeedback(null)
+    setSpecialtiesError(null)
+    setSelectedServiceIds(services.map((s) => s.id))
+  }
+
+  function handleClearSpecialties() {
+    setSpecialtiesFeedback(null)
+    setSpecialtiesError(null)
+    setSelectedServiceIds([])
+  }
+
+  async function handleSaveSpecialties(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSavingSpecialties(true)
+    setSpecialtiesFeedback(null)
+    setSpecialtiesError(null)
+
+    try {
+      const updated = await updateMyServices(selectedServiceIds)
+      setMyServices(updated)
+      setSelectedServiceIds(updated.map((s) => s.id))
+      setSpecialtiesFeedback(
+        updated.length === 0
+          ? 'Se actualizaron tus especialidades (ningún oficio seleccionado). Elegí al menos uno para ver solicitudes en la Bolsa de Trabajo.'
+          : 'Especialidades guardadas correctamente. Actualizamos tu Bolsa de Trabajo.',
+      )
+      await loadAvailableTickets()
+    } catch (err) {
+      setSpecialtiesError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudieron guardar tus especialidades',
+      )
+    } finally {
+      setSavingSpecialties(false)
+    }
+  }
+
   function handleFilterChange(nextFilter: OperarioStatusFilter) {
     setStatusFilter(nextFilter)
     void loadMyTickets(nextFilter)
@@ -340,6 +490,9 @@ export function OperarioDashboardPage() {
         setActionError(
           err instanceof Error ? err.message : 'No se pudo aceptar el trabajo',
         )
+        if (err instanceof ApiError && err.status === 403) {
+          await loadAvailableTickets()
+        }
       }
     } finally {
       setAssigningId(null)
@@ -527,10 +680,35 @@ export function OperarioDashboardPage() {
               Panel de Operario
             </h1>
             <p className="mt-1.5 text-sm text-slate-400">
-              Tomá solicitudes disponibles y gestioná el avance de tus
-              trabajos asignados.
+              Tomá solicitudes disponibles de tus oficios y gestioná el avance
+              de tus trabajos asignados.
             </p>
           </div>
+
+          <button
+            type="button"
+            onClick={openSpecialtiesSection}
+            className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition ${
+              !myServicesLoading && myServices.length === 0
+                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200 hover:border-amber-400 hover:bg-amber-500/20'
+                : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-emerald-500/60 hover:text-emerald-300'
+            }`}
+          >
+            <span>Mis Especialidades</span>
+            {myServicesLoading ? (
+              <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-bold text-slate-300">
+                …
+              </span>
+            ) : myServices.length === 0 ? (
+              <span className="rounded-full bg-amber-500/25 px-2 py-0.5 text-[11px] font-bold text-amber-200">
+                Sin configurar
+              </span>
+            ) : (
+              <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-bold text-emerald-300">
+                {myServices.length}
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Pestañas principales */}
@@ -570,6 +748,23 @@ export function OperarioDashboardPage() {
             <span>Mis Trabajos</span>
             <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
               {myTicketsLoading ? '…' : myTickets.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'MIS_ESPECIALIDADES'}
+            onClick={openSpecialtiesSection}
+            className={`inline-flex items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+              activeTab === 'MIS_ESPECIALIDADES'
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+            }`}
+          >
+            <span>Mis Especialidades</span>
+            <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
+              {myServicesLoading ? '…' : myServices.length}
             </span>
           </button>
         </div>
@@ -632,7 +827,7 @@ export function OperarioDashboardPage() {
                   Trabajos disponibles
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Tickets en estado CREADO listos para ser aceptados.
+                  Tickets en estado CREADO filtrados según tus especialidades.
                 </p>
               </div>
               <button
@@ -644,6 +839,20 @@ export function OperarioDashboardPage() {
                 {availableLoading ? 'Actualizando…' : 'Actualizar'}
               </button>
             </div>
+
+            {!myServicesLoading && myServices.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                <span>Filtrando por tus oficios:</span>
+                {myServices.map((service) => (
+                  <span
+                    key={service.id}
+                    className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 font-medium text-emerald-300"
+                  >
+                    {service.nombre}
+                  </span>
+                ))}
+              </div>
+            )}
 
             {availableError && (
               <div
@@ -661,7 +870,7 @@ export function OperarioDashboardPage() {
               </div>
             )}
 
-            {availableLoading ? (
+            {availableLoading || myServicesLoading ? (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {[1, 2, 3, 4].map((item) => (
                   <div
@@ -670,21 +879,50 @@ export function OperarioDashboardPage() {
                   />
                 ))}
               </div>
-            ) : availableTickets.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
-                <p className="text-base font-medium text-slate-200">
-                  No hay trabajos disponibles en este momento
+            ) : !myServicesError && myServices.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-amber-500/40 bg-amber-500/5 px-6 py-14 text-center">
+                <p className="text-base font-semibold text-amber-200">
+                  Todavía no seleccionaste tus especialidades
                 </p>
-                <p className="mt-1.5 text-sm text-slate-400">
-                  Cuando un cliente cree una nueva solicitud, aparecerá aquí.
+                <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
+                  Para ver solicitudes en la Bolsa de Trabajo, primero elegí los
+                  oficios que realizás (plomería, electricidad, gas, cerrajería,
+                  etc.).
                 </p>
                 <button
                   type="button"
-                  onClick={() => void loadAvailableTickets()}
-                  className="mt-4 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-500/50 hover:text-emerald-300"
+                  onClick={openSpecialtiesSection}
+                  className="mt-5 inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
                 >
-                  Volver a consultar
+                  Configurar Mis Especialidades
                 </button>
+              </div>
+            ) : availableTickets.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
+                <p className="text-base font-medium text-slate-200">
+                  No hay trabajos disponibles para tus especialidades en este
+                  momento
+                </p>
+                <p className="mt-1.5 text-sm text-slate-400">
+                  Cuando un cliente cree una solicitud de tus oficios, aparecerá
+                  aquí automáticamente.
+                </p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void loadAvailableTickets()}
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-500/50 hover:text-emerald-300"
+                  >
+                    Volver a consultar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openSpecialtiesSection}
+                    className="rounded-lg border border-slate-800 bg-slate-950 px-4 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-600 hover:text-white"
+                  >
+                    Editar mis especialidades
+                  </button>
+                </div>
               </div>
             ) : (
               <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -953,6 +1191,197 @@ export function OperarioDashboardPage() {
                   )
                 })}
               </ul>
+            )}
+          </section>
+        )}
+
+        {/* Pestaña 3: Mis Especialidades */}
+        {activeTab === 'MIS_ESPECIALIDADES' && (
+          <section aria-label="Mis Especialidades">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Mis Especialidades
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Seleccioná los oficios que realizás. Solo verás y podrás
+                  aceptar solicitudes de estos servicios en la Bolsa de Trabajo.
+                </p>
+              </div>
+
+              {services.length > 0 && !servicesLoading && !myServicesLoading && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={savingSpecialties}
+                    onClick={handleSelectAllSpecialties}
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-60"
+                  >
+                    Seleccionar todos
+                  </button>
+                  <button
+                    type="button"
+                    disabled={savingSpecialties}
+                    onClick={handleClearSpecialties}
+                    className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-slate-700 hover:text-slate-200 disabled:opacity-60"
+                  >
+                    Limpiar selección
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {specialtiesFeedback && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                <span>{specialtiesFeedback}</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('BOLSA')}
+                    className="text-xs font-semibold text-emerald-200 underline hover:text-white"
+                  >
+                    Ver Bolsa de Trabajo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSpecialtiesFeedback(null)}
+                    aria-label="Cerrar confirmación"
+                    className="text-xs text-emerald-200 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {specialtiesError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{specialtiesError}</span>
+                <button
+                  type="button"
+                  onClick={() => setSpecialtiesError(null)}
+                  aria-label="Cerrar error de especialidades"
+                  className="shrink-0 text-xs text-rose-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {(servicesError || myServicesError) && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{servicesError ?? myServicesError}</span>
+                <button
+                  type="button"
+                  onClick={() => void loadSpecialtiesAndCatalog()}
+                  className="shrink-0 text-xs font-semibold text-rose-200 underline hover:text-white"
+                >
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {servicesLoading || myServicesLoading ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[1, 2, 3, 4].map((item) => (
+                  <div
+                    key={item}
+                    className="h-28 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
+                  />
+                ))}
+              </div>
+            ) : services.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-12 text-center">
+                <p className="text-base font-medium text-slate-200">
+                  No hay servicios cargados en el catálogo todavía
+                </p>
+                <p className="mt-1.5 text-sm text-slate-400">
+                  Cuando el catálogo tenga servicios disponibles, podrás
+                  seleccionarlos aquí.
+                </p>
+              </div>
+            ) : (
+              <form onSubmit={handleSaveSpecialties} className="space-y-5">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {services.map((service) => {
+                    const checked = selectedServiceSet.has(service.id)
+                    return (
+                      <label
+                        key={service.id}
+                        className={`flex cursor-pointer items-start gap-3.5 rounded-2xl border p-4 transition ${
+                          checked
+                            ? 'border-emerald-500/60 bg-emerald-500/10 ring-1 ring-emerald-500/20'
+                            : 'border-slate-800 bg-slate-900/70 hover:border-slate-700'
+                        } ${savingSpecialties ? 'cursor-not-allowed opacity-60' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={savingSpecialties}
+                          onChange={() => handleToggleSpecialty(service.id)}
+                          className="mt-1 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-2 focus:ring-emerald-500/40"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-white">
+                              {service.nombre}
+                            </span>
+                            <span className="rounded-full border border-slate-700 bg-slate-950/80 px-2.5 py-0.5 text-xs font-medium text-slate-300">
+                              Base: {formatCurrency(service.tarifa_base)}
+                            </span>
+                          </div>
+                          {service.descripcion && (
+                            <p className="mt-1.5 text-xs text-slate-400">
+                              {service.descripcion}
+                            </p>
+                          )}
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3.5">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>
+                      <strong className="text-slate-200">
+                        {selectedServiceIds.length}
+                      </strong>{' '}
+                      de {services.length}{' '}
+                      {services.length === 1
+                        ? 'oficio seleccionado'
+                        : 'oficios seleccionados'}
+                    </span>
+                    {hasUnsavedSpecialtyChanges && (
+                      <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 font-medium text-amber-300">
+                        Cambios sin guardar
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingSpecialties}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingSpecialties && (
+                      <span
+                        aria-hidden
+                        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
+                      />
+                    )}
+                    {savingSpecialties
+                      ? 'Guardando…'
+                      : 'Guardar especialidades'}
+                  </button>
+                </div>
+              </form>
             )}
           </section>
         )}
