@@ -35,6 +35,7 @@ var (
 	ErrInvalidStateTransition = errors.New("transición de estado inválida")
 	ErrInvalidTicketState     = errors.New("estado de ticket inválido")
 	ErrTicketAccessDenied     = errors.New("no tenés permiso para acceder a este ticket")
+	ErrInvalidEvidenceType    = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
 )
 
 // IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.

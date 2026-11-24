@@ -48,6 +48,11 @@ func RegisterRoutes(router fiber.Router, handler *TicketHandler, jwtSecret strin
 		handler.CancelTicket,
 	)
 
+	tickets.Post("/:id/evidencia/upload-url",
+		middleware.RequireRole(string(authDomain.RoleOperario)),
+		handler.GenerateEvidenceUploadURL,
+	)
+
 	tickets.Post("/:id/finalizar",
 		middleware.RequireRole(string(authDomain.RoleOperario)),
 		handler.FinishTicket,
