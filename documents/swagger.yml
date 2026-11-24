@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.6.0
+  version: 1.7.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -495,6 +495,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/operarios/me/rating:
+    get:
+      summary: Obtener Mi Reputación y Reseñas
+      description: |
+        Devuelve el promedio de calificación (`1..5`, o `0` si aún no posee reseñas),
+        la cantidad total de reseñas y el listado completo de calificaciones recibidas
+        por el operario autenticado, ordenadas de más reciente a más antigua.
+
+        Requiere exclusivamente rol **OPERARIO**.
+      tags:
+        - Operarios
+        - Tickets (Operario)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Resumen de reputación y listado de reseñas del operario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperarioRating'
         '401':
           description: Token ausente, inválido o expirado
           content:
@@ -1129,6 +1169,80 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/tickets/{id}/calificar:
+    post:
+      summary: Calificar Servicio de un Ticket Finalizado
+      description: |
+        Permite al **CLIENTE** dueño de un ticket en estado **FINALIZADO** registrar
+        una puntuación (`1` a `5`) y un comentario opcional (máx. 500 caracteres).
+
+        Validaciones:
+        - `puntuacion` entre `1` y `5` (`400 Bad Request`).
+        - El ticket debe existir (`404 Not Found`), pertenecer al cliente autenticado (`403 Forbidden`)
+          y encontrarse en estado `FINALIZADO` (`400 Bad Request`).
+        - Solo se admite una reseña por ticket (`409 Conflict` si ya fue calificado).
+      tags:
+        - Tickets (Cliente)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket finalizado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCalificarRequest'
+      responses:
+        '201':
+          description: Reseña registrada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketReview'
+        '400':
+          description: Puntuación fuera de rango (1..5), comentario > 500 caracteres, ticket no FINALIZADO o UUID inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario no tiene rol CLIENTE o no es el dueño del ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflicto - Este ticket ya fue calificado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1353,6 +1467,11 @@ components:
           format: uri
           nullable: true
           example: "https://storage.midominio.com/evidencia/ticket_a1b2c3d4.jpg"
+        resena:
+          allOf:
+            - $ref: '#/components/schemas/TicketReview'
+          nullable: true
+          description: Presente únicamente cuando el ticket finalizado ya fue calificado por el cliente.
         created_at:
           type: string
           format: date-time
@@ -1496,6 +1615,70 @@ components:
           type: string
           format: uri
           example: "https://storage.midominio.com/evidencia/ticket_a1b2c3d4.jpg"
+
+    TicketCalificarRequest:
+      type: object
+      required:
+        - puntuacion
+      properties:
+        puntuacion:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
+        comentario:
+          type: string
+          maxLength: 500
+          example: "Excelente trabajo, llegó puntual y resolvió todo rápido."
+
+    TicketReview:
+      type: object
+      description: Reseña emitida por el cliente sobre un ticket finalizado.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "8c0a2c70-4e11-452d-b260-3d8ea6b1e5a1"
+        ticket_id:
+          type: string
+          format: uuid
+          example: "3384504f-76f0-4890-ae4e-c0460d89a178"
+        cliente_id:
+          type: string
+          format: uuid
+          example: "4196cbe5-f509-4009-acb0-7311c58359c0"
+        operario_id:
+          type: string
+          format: uuid
+          example: "f9f6a086-06eb-4f2a-a82c-21a9a52eb8ef"
+        puntuacion:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
+        comentario:
+          type: string
+          example: "Excelente trabajo"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-24T19:00:00Z"
+
+    OperarioRating:
+      type: object
+      description: Resumen de reputación y reseñas recibidas por un operario.
+      properties:
+        promedio:
+          type: number
+          format: float
+          example: 4.8
+        total_resenas:
+          type: integer
+          example: 5
+        resenas:
+          type: array
+          items:
+            $ref: '#/components/schemas/TicketReview'
 
     MessageResponse:
       type: object
