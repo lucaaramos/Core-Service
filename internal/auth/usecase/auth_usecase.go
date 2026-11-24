@@ -16,13 +16,15 @@ import (
 
 const tokenTTL = 24 * time.Hour
 
-// AuthUsecase define los casos de uso de registro, autenticación y perfil de usuario.
+// AuthUsecase define los casos de uso de registro, autenticación, perfil y aprobación de operarios.
 type AuthUsecase interface {
 	Register(ctx context.Context, nombre, email, password, telefono string, rol domain.UserRole) (*domain.User, error)
 	Login(ctx context.Context, email, password, secret string) (string, error)
 	GetProfile(ctx context.Context, userID uuid.UUID) (*domain.User, error)
 	UpdateProfile(ctx context.Context, userID uuid.UUID, nombre, telefono string) (*domain.User, error)
 	ChangePassword(ctx context.Context, userID uuid.UUID, currentPassword, newPassword string) error
+	ListOperarios(ctx context.Context, estado *string) ([]domain.User, error)
+	UpdateOperarioApproval(ctx context.Context, operarioID uuid.UUID, nuevoEstado domain.ApprovalStatus) (*domain.User, error)
 }
 
 type authUsecase struct {
@@ -34,7 +36,8 @@ func NewAuthUsecase(repo domain.AuthRepository) AuthUsecase {
 	return &authUsecase{repo: repo}
 }
 
-// Register valida el rol, hashea la contraseña con bcrypt y persiste el usuario.
+// Register valida el rol, asigna estado_aprobacion ('PENDIENTE' para OPERARIO, 'APROBADO' para CLIENTE),
+// hashea la contraseña con bcrypt y persiste el usuario.
 func (u *authUsecase) Register(ctx context.Context, nombre, email, password, telefono string, rol domain.UserRole) (*domain.User, error) {
 	if rol != domain.RoleCliente && rol != domain.RoleOperario {
 		return nil, fmt.Errorf("%w: solo se permite CLIENTE u OPERARIO", domain.ErrInvalidRole)
@@ -48,13 +51,19 @@ func (u *authUsecase) Register(ctx context.Context, nombre, email, password, tel
 		return nil, fmt.Errorf("error hasheando contraseña: %w", err)
 	}
 
+	estadoAprobacion := domain.ApprovalAprobado
+	if rol == domain.RoleOperario {
+		estadoAprobacion = domain.ApprovalPendiente
+	}
+
 	user := &domain.User{
-		ID:           uuid.New(),
-		Nombre:       nombre,
-		Email:        email,
-		PasswordHash: string(hashed),
-		Rol:          rol,
-		Telefono:     telefono,
+		ID:               uuid.New(),
+		Nombre:           nombre,
+		Email:            email,
+		PasswordHash:     string(hashed),
+		Rol:              rol,
+		Telefono:         telefono,
+		EstadoAprobacion: estadoAprobacion,
 	}
 
 	if err := u.repo.CreateUser(ctx, user); err != nil {
@@ -149,4 +158,46 @@ func (u *authUsecase) ChangePassword(ctx context.Context, userID uuid.UUID, curr
 	}
 
 	return u.repo.UpdatePassword(ctx, userID, string(hashed))
+}
+
+// ListOperarios lista los operarios registrados con filtro opcional por estado de aprobación.
+func (u *authUsecase) ListOperarios(ctx context.Context, estado *string) ([]domain.User, error) {
+	var estadoFilter *domain.ApprovalStatus
+	if estado != nil {
+		if !domain.IsValidApprovalStatus(*estado) {
+			return nil, fmt.Errorf("%w: %s", domain.ErrInvalidApprovalStatus, *estado)
+		}
+		parsed := domain.ApprovalStatus(*estado)
+		estadoFilter = &parsed
+	}
+
+	operarios, err := u.repo.ListOperarios(ctx, estadoFilter)
+	if err != nil {
+		return nil, fmt.Errorf("error listando operarios: %w", err)
+	}
+
+	return operarios, nil
+}
+
+// UpdateOperarioApproval permite a un ADMIN aprobar o rechazar una cuenta con rol OPERARIO.
+func (u *authUsecase) UpdateOperarioApproval(ctx context.Context, operarioID uuid.UUID, nuevoEstado domain.ApprovalStatus) (*domain.User, error) {
+	if nuevoEstado != domain.ApprovalAprobado && nuevoEstado != domain.ApprovalRechazado {
+		return nil, fmt.Errorf("%w: solo se permite APROBADO o RECHAZADO", domain.ErrInvalidApprovalStatus)
+	}
+
+	target, err := u.repo.GetByID(ctx, operarioID)
+	if err != nil {
+		return nil, err
+	}
+	if target.Rol != domain.RoleOperario {
+		return nil, domain.ErrTargetNotOperario
+	}
+
+	updated, err := u.repo.UpdateOperarioApproval(ctx, operarioID, nuevoEstado)
+	if err != nil {
+		return nil, err
+	}
+
+	updated.PasswordHash = ""
+	return updated, nil
 }

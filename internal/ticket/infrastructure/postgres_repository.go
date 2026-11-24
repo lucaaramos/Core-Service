@@ -393,8 +393,18 @@ func (r *PostgresTicketRepository) HasOperarioSpecialty(ctx context.Context, ope
 	return exists, nil
 }
 
+// GetOperarioApprovalStatus consulta el estado_aprobacion del operario en la tabla users.
+func (r *PostgresTicketRepository) GetOperarioApprovalStatus(ctx context.Context, operarioID uuid.UUID) (string, error) {
+	var estado string
+	err := r.db.QueryRowContext(ctx, "SELECT estado_aprobacion FROM users WHERE id = $1", operarioID).Scan(&estado)
+	if err != nil {
+		return "", fmt.Errorf("error consultando estado de aprobación del operario: %w", err)
+	}
+	return estado, nil
+}
+
 // AssignOperario maneja la concurrencia al aceptar un ticket (WHERE estado = 'CREADO'),
-// asegura la especialidad y registra atómicamente CREADO -> ASIGNADO en ticket_history.
+// asegura la aprobación y especialidad y registra atómicamente CREADO -> ASIGNADO en ticket_history.
 func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -408,6 +418,11 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 		UPDATE tickets
 		SET operario_id = $1, estado = $2, updated_at = NOW()
 		WHERE id = $3 AND estado = $4
+		  AND EXISTS (
+			SELECT 1
+			FROM users u
+			WHERE u.id = $1 AND u.estado_aprobacion = 'APROBADO'
+		  )
 		  AND EXISTS (
 			SELECT 1
 			FROM operario_services os
@@ -433,6 +448,17 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 				return domain.ErrTicketNotFound
 			}
 			return fmt.Errorf("error verificando existencia del ticket: %w", err)
+		}
+
+		var approvalStatus string
+		if err := tx.QueryRowContext(ctx, "SELECT estado_aprobacion FROM users WHERE id = $1", operarioID).Scan(&approvalStatus); err != nil {
+			return fmt.Errorf("error verificando aprobación de operario: %w", err)
+		}
+		if approvalStatus == "RECHAZADO" {
+			return domain.ErrOperarioRejected
+		}
+		if approvalStatus != "APROBADO" {
+			return domain.ErrOperarioPendingApproval
 		}
 
 		var hasSpecialty bool

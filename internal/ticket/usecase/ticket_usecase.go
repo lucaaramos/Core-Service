@@ -90,9 +90,29 @@ func (u *ticketUsecase) CreateTicket(ctx context.Context, clienteID uuid.UUID, s
 	return t, nil
 }
 
-// GetAvailableTickets devuelve la bolsa de trabajo para el operario autenticado,
+func (u *ticketUsecase) ensureOperarioApproved(ctx context.Context, operarioID uuid.UUID) error {
+	status, err := u.repo.GetOperarioApprovalStatus(ctx, operarioID)
+	if err != nil {
+		return err
+	}
+
+	switch status {
+	case "APROBADO":
+		return nil
+	case "RECHAZADO":
+		return domain.ErrOperarioRejected
+	default:
+		return domain.ErrOperarioPendingApproval
+	}
+}
+
+// GetAvailableTickets devuelve la bolsa de trabajo para el operario autenticado (si está APROBADO),
 // filtrando tickets CREADO sin asignar según sus especialidades registradas.
 func (u *ticketUsecase) GetAvailableTickets(ctx context.Context, operarioID uuid.UUID) ([]domain.AvailableTicket, error) {
+	if err := u.ensureOperarioApproved(ctx, operarioID); err != nil {
+		return nil, err
+	}
+
 	tickets, err := u.repo.GetAvailable(ctx, operarioID)
 	if err != nil {
 		return nil, fmt.Errorf("error al obtener tickets disponibles: %w", err)
@@ -101,9 +121,13 @@ func (u *ticketUsecase) GetAvailableTickets(ctx context.Context, operarioID uuid
 	return tickets, nil
 }
 
-// AssignTicket valida que el ticket exista y que el operario posea la especialidad requerida,
+// AssignTicket valida que el operario esté APROBADO, que el ticket exista y que posea la especialidad requerida,
 // y delega al repositorio la asignación segura con auditoría.
 func (u *ticketUsecase) AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error {
+	if err := u.ensureOperarioApproved(ctx, operarioID); err != nil {
+		return err
+	}
+
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
 		return err

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { changePassword, getMe, updateMe } from '../api/users'
 import { Navbar } from '../components/Navbar'
 import { useAuth } from '../context/AuthContext'
-import type { Role, UserProfile } from '../types/api'
+import type { ApprovalStatus, Role, UserProfile } from '../types/api'
 import { dashboardPath, roleLabel } from '../utils/auth'
 import { formatDate } from '../utils/format'
 
@@ -11,6 +11,24 @@ const ROLE_BADGE_STYLES: Record<Role, string> = {
   CLIENTE: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
   OPERARIO: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
   ADMIN: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
+}
+
+const APPROVAL_BADGE_STYLES: Record<
+  ApprovalStatus,
+  { label: string; className: string }
+> = {
+  PENDIENTE: {
+    label: 'Pendiente de aprobación',
+    className: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  },
+  APROBADO: {
+    label: 'Aprobado',
+    className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  },
+  RECHAZADO: {
+    label: 'Rechazado',
+    className: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+  },
 }
 
 export function ProfilePage() {
@@ -249,12 +267,19 @@ export function ProfilePage() {
                     <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
                       Rol en plataforma
                     </dt>
-                    <dd className="mt-1.5">
+                    <dd className="mt-1.5 flex flex-wrap items-center gap-1.5">
                       <span
                         className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${ROLE_BADGE_STYLES[profile.rol]}`}
                       >
                         {roleLabel(profile.rol)}
                       </span>
+                      {profile.rol === 'OPERARIO' && (
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${APPROVAL_BADGE_STYLES[profile.estado_aprobacion].className}`}
+                        >
+                          {APPROVAL_BADGE_STYLES[profile.estado_aprobacion].label}
+                        </span>
+                      )}
                     </dd>
                   </div>
 

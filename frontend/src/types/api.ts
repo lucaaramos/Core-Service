@@ -1,5 +1,7 @@
 export type Role = 'CLIENTE' | 'OPERARIO' | 'ADMIN'
 
+export type ApprovalStatus = 'PENDIENTE' | 'APROBADO' | 'RECHAZADO'
+
 export type TicketStatus =
   | 'CREADO'
   | 'ASIGNADO'
@@ -32,6 +34,7 @@ export interface RegisterResponse {
   nombre: string
   email: string
   rol: Role
+  estado_aprobacion?: ApprovalStatus
 }
 
 export interface UserProfile {
@@ -40,7 +43,21 @@ export interface UserProfile {
   email: string
   telefono: string
   rol: Role
+  estado_aprobacion: ApprovalStatus
   created_at: string
+}
+
+export interface OperarioAdminItem {
+  id: string
+  nombre: string
+  email: string
+  telefono: string
+  estado_aprobacion: ApprovalStatus
+  created_at: string
+}
+
+export interface UpdateOperarioApprovalRequest {
+  estado_aprobacion: 'APROBADO' | 'RECHAZADO'
 }
 
 export interface UpdateProfileRequest {

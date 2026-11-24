@@ -323,6 +323,8 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, domain.ErrTicketNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAccessDenied),
+		errors.Is(err, domain.ErrOperarioPendingApproval),
+		errors.Is(err, domain.ErrOperarioRejected),
 		errors.Is(err, domain.ErrOperarioMissingSpecialty):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrTicketAlreadyAssigned),
