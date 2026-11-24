@@ -4,6 +4,7 @@ import { RoleRedirect } from './components/RoleRedirect'
 import { ClienteDashboardPage } from './pages/ClienteDashboardPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { LoginPage } from './pages/LoginPage'
+import { OperarioDashboardPage } from './pages/OperarioDashboardPage'
 import { RegisterPage } from './pages/RegisterPage'
 
 export default function App() {
@@ -26,7 +27,7 @@ export default function App() {
         path="/operario"
         element={
           <ProtectedRoute roles={['OPERARIO']}>
-            <DashboardPage expectedRole="OPERARIO" />
+            <OperarioDashboardPage />
           </ProtectedRoute>
         }
       />

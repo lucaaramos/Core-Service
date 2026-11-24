@@ -2,6 +2,16 @@ import type { ErrorResponse } from '../types/api'
 
 export const TOKEN_KEY = 'core_service_token'
 
+export class ApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? 'http://localhost:8080/api/v1'
 
@@ -41,7 +51,7 @@ export async function apiFetch<T>(
     if (window.location.pathname !== '/login') {
       window.location.assign('/login')
     }
-    throw new Error('Tu sesión expiró. Iniciá sesión nuevamente.')
+    throw new ApiError('Tu sesión expiró. Iniciá sesión nuevamente.', 401)
   }
 
   if (response.status === 204) {
@@ -54,7 +64,7 @@ export async function apiFetch<T>(
     const message =
       (body as ErrorResponse | null)?.error ??
       `Error ${response.status}: no se pudo completar la operación`
-    throw new Error(message)
+    throw new ApiError(message, response.status)
   }
 
   return body as T
