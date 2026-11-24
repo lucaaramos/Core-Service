@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react'
 import { ApiError } from '../api/client'
-import { getServices } from '../api/services'
+import {
+  createService,
+  deleteService,
+  getServices,
+  updateService,
+} from '../api/services'
 import {
   cancelTicket,
   getTicketById,
@@ -22,7 +34,9 @@ import {
   METODO_PAGO_LABELS,
 } from '../utils/format'
 
+type AdminTab = 'TICKETS' | 'SERVICIOS'
 type StatusFilter = 'TODOS' | TicketStatus
+type ServiceModalMode = 'CREATE' | 'EDIT' | null
 
 const ALL_STATES: TicketStatus[] = [
   'CREADO',
@@ -78,8 +92,33 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 }
 
 export function AdminDashboardPage() {
+  const [activeTab, setActiveTab] = useState<AdminTab>('TICKETS')
+
   // Catálogo de servicios
   const [services, setServices] = useState<Service[]>([])
+  const [servicesLoading, setServicesLoading] = useState(true)
+  const [servicesError, setServicesError] = useState<string | null>(null)
+  const [catalogFeedback, setCatalogFeedback] = useState<string | null>(null)
+  const servicesReqIdRef = useRef(0)
+
+  // Modal Crear / Editar Servicio
+  const [serviceModalMode, setServiceModalMode] =
+    useState<ServiceModalMode>(null)
+  const [editingService, setEditingService] = useState<Service | null>(null)
+  const [serviceNombreInput, setServiceNombreInput] = useState('')
+  const [serviceDescripcionInput, setServiceDescripcionInput] = useState('')
+  const [serviceTarifaInput, setServiceTarifaInput] = useState('')
+  const [savingService, setSavingService] = useState(false)
+  const [serviceModalError, setServiceModalError] = useState<string | null>(
+    null,
+  )
+
+  // Modal Confirmar Eliminación de Servicio
+  const [serviceToDelete, setServiceToDelete] = useState<Service | null>(null)
+  const [deletingService, setDeletingService] = useState(false)
+  const [deleteServiceError, setDeleteServiceError] = useState<string | null>(
+    null,
+  )
 
   // Listado global (para KPIs sincronizados) y listado filtrado actual
   const [allTickets, setAllTickets] = useState<Ticket[]>([])
@@ -102,7 +141,7 @@ export function AdminDashboardPage() {
   const [detailError, setDetailError] = useState<string | null>(null)
   const detailReqIdRef = useRef(0)
 
-  // Modal de confirmación de cancelación
+  // Modal de confirmación de cancelación de ticket
   const [ticketToCancel, setTicketToCancel] = useState<Ticket | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
@@ -157,6 +196,31 @@ export function AdminDashboardPage() {
       )
     })
   }, [tickets, searchQuery, servicesMap])
+
+  const loadServices = useCallback(async () => {
+    const requestId = ++servicesReqIdRef.current
+    setServicesLoading(true)
+    setServicesError(null)
+    try {
+      const data = await getServices()
+      if (requestId === servicesReqIdRef.current) {
+        setServices(data)
+      }
+    } catch (err) {
+      if (requestId === servicesReqIdRef.current) {
+        setServicesError(
+          extractErrorMessage(
+            err,
+            'No se pudo cargar el catálogo de servicios',
+          ),
+        )
+      }
+    } finally {
+      if (requestId === servicesReqIdRef.current) {
+        setServicesLoading(false)
+      }
+    }
+  }, [])
 
   const loadTickets = useCallback(
     async (filter: StatusFilter, refreshGlobal = false) => {
@@ -230,14 +294,27 @@ export function AdminDashboardPage() {
   useEffect(() => {
     let cancelled = false
 
+    const svcReqId = ++servicesReqIdRef.current
     getServices()
       .then((data) => {
-        if (!cancelled) {
+        if (!cancelled && svcReqId === servicesReqIdRef.current) {
           setServices(data)
         }
       })
-      .catch(() => {
-        // Fallback visual a "Servicio #<id>" si falla el catálogo
+      .catch((err: unknown) => {
+        if (!cancelled && svcReqId === servicesReqIdRef.current) {
+          setServicesError(
+            extractErrorMessage(
+              err,
+              'No se pudo cargar el catálogo de servicios',
+            ),
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled && svcReqId === servicesReqIdRef.current) {
+          setServicesLoading(false)
+        }
       })
 
     const requestId = ++ticketsReqIdRef.current
@@ -268,11 +345,25 @@ export function AdminDashboardPage() {
 
   // Cerrar modales con la tecla Escape
   useEffect(() => {
-    if (!detailTicketId && !ticketToCancel) return
+    if (
+      !detailTicketId &&
+      !ticketToCancel &&
+      !serviceModalMode &&
+      !serviceToDelete
+    ) {
+      return
+    }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== 'Escape') return
-      if (ticketToCancel && !cancelling) {
+      if (serviceToDelete && !deletingService) {
+        setServiceToDelete(null)
+        setDeleteServiceError(null)
+      } else if (serviceModalMode && !savingService) {
+        setServiceModalMode(null)
+        setEditingService(null)
+        setServiceModalError(null)
+      } else if (ticketToCancel && !cancelling) {
         setTicketToCancel(null)
         setCancelError(null)
       } else if (detailTicketId) {
@@ -285,7 +376,15 @@ export function AdminDashboardPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [detailTicketId, ticketToCancel, cancelling])
+  }, [
+    detailTicketId,
+    ticketToCancel,
+    cancelling,
+    serviceModalMode,
+    savingService,
+    serviceToDelete,
+    deletingService,
+  ])
 
   function handleFilterChange(nextFilter: StatusFilter) {
     setStatusFilter(nextFilter)
@@ -360,6 +459,114 @@ export function AdminDashboardPage() {
     setDetailError(null)
   }
 
+  // --- Handlers ABM de Servicios ---
+  function openCreateServiceModal() {
+    setEditingService(null)
+    setServiceNombreInput('')
+    setServiceDescripcionInput('')
+    setServiceTarifaInput('')
+    setServiceModalError(null)
+    setServiceModalMode('CREATE')
+  }
+
+  function openEditServiceModal(service: Service) {
+    setEditingService(service)
+    setServiceNombreInput(service.nombre)
+    setServiceDescripcionInput(service.descripcion ?? '')
+    setServiceTarifaInput(String(service.tarifa_base))
+    setServiceModalError(null)
+    setServiceModalMode('EDIT')
+  }
+
+  function closeServiceModal() {
+    if (savingService) return
+    setServiceModalMode(null)
+    setEditingService(null)
+    setServiceModalError(null)
+  }
+
+  async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setServiceModalError(null)
+    setCatalogFeedback(null)
+
+    const trimmedNombre = serviceNombreInput.trim()
+    if (!trimmedNombre) {
+      setServiceModalError('El nombre del servicio no puede estar vacío.')
+      return
+    }
+
+    const parsedTarifa = Number(serviceTarifaInput)
+    if (!Number.isFinite(parsedTarifa) || parsedTarifa <= 0) {
+      setServiceModalError('Ingresá una tarifa base válida mayor a 0.')
+      return
+    }
+
+    const trimmedDescripcion = serviceDescripcionInput.trim()
+    const payload = {
+      nombre: trimmedNombre,
+      descripcion: trimmedDescripcion ? trimmedDescripcion : null,
+      tarifa_base: parsedTarifa,
+    }
+
+    setSavingService(true)
+    try {
+      if (serviceModalMode === 'EDIT' && editingService) {
+        const updated = await updateService(editingService.id, payload)
+        setCatalogFeedback(
+          `Servicio "${updated.nombre}" actualizado correctamente.`,
+        )
+      } else {
+        const created = await createService(payload)
+        setCatalogFeedback(`Servicio "${created.nombre}" creado correctamente.`)
+      }
+      setServiceModalMode(null)
+      setEditingService(null)
+      await loadServices()
+    } catch (err) {
+      setServiceModalError(
+        err instanceof Error ? err.message : 'No se pudo guardar el servicio',
+      )
+    } finally {
+      setSavingService(false)
+    }
+  }
+
+  function openDeleteServiceConfirm(service: Service) {
+    setDeleteServiceError(null)
+    setServiceToDelete(service)
+  }
+
+  function closeDeleteServiceConfirm() {
+    if (deletingService) return
+    setServiceToDelete(null)
+    setDeleteServiceError(null)
+  }
+
+  async function handleConfirmDeleteService() {
+    if (!serviceToDelete) return
+
+    setDeletingService(true)
+    setDeleteServiceError(null)
+    setCatalogFeedback(null)
+
+    try {
+      const res = await deleteService(serviceToDelete.id)
+      const deletedName = serviceToDelete.nombre
+      setServiceToDelete(null)
+      setCatalogFeedback(
+        res.message || `Servicio "${deletedName}" eliminado correctamente.`,
+      )
+      await loadServices()
+    } catch (err) {
+      setDeleteServiceError(
+        err instanceof Error ? err.message : 'No se pudo eliminar el servicio',
+      )
+    } finally {
+      setDeletingService(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <Navbar />
@@ -371,474 +578,982 @@ export function AdminDashboardPage() {
               Panel de Administración
             </h1>
             <p className="mt-1 text-sm text-slate-400">
-              Supervisión global de tickets, estados y facturación acumulada.
+              Supervisión global de tickets, facturación y gestión del catálogo
+              de servicios.
             </p>
           </div>
 
           <button
             type="button"
-            onClick={() => void loadTickets(statusFilter, true)}
-            disabled={ticketsLoading}
+            onClick={() => {
+              if (activeTab === 'TICKETS') {
+                void loadTickets(statusFilter, true)
+                void loadServices()
+              } else {
+                void loadServices()
+              }
+            }}
+            disabled={
+              activeTab === 'TICKETS' ? ticketsLoading : servicesLoading
+            }
             className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
           >
-            {ticketsLoading ? 'Actualizando…' : 'Actualizar'}
+            {(activeTab === 'TICKETS' ? ticketsLoading : servicesLoading)
+              ? 'Actualizando…'
+              : 'Actualizar'}
           </button>
         </div>
 
-        {/* KPIs principales + Contadores por estado */}
-        <section aria-label="Resumen de tickets" className="mb-8 space-y-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => handleFilterChange('TODOS')}
-              className={`rounded-2xl border bg-slate-900/70 p-4 text-left transition ${
-                statusFilter === 'TODOS'
-                  ? 'border-emerald-500 ring-1 ring-emerald-500/30'
-                  : 'border-slate-800 hover:border-slate-700'
-              }`}
-            >
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Total de tickets
-              </p>
-              <p className="mt-1 text-2xl font-bold text-white">{kpis.total}</p>
-            </button>
+        {/* Pestañas principales: Tickets | Catálogo de Servicios */}
+        <div
+          role="tablist"
+          aria-label="Secciones de administración"
+          className="mb-6 flex flex-wrap gap-2 border-b border-slate-800 pb-4"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'TICKETS'}
+            onClick={() => setActiveTab('TICKETS')}
+            className={`inline-flex items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+              activeTab === 'TICKETS'
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+            }`}
+          >
+            <span>Tickets</span>
+            <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
+              {ticketsLoading ? '…' : kpis.total}
+            </span>
+          </button>
 
-            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-emerald-400">
-                Total facturado (Finalizados)
-              </p>
-              <p className="mt-1 text-2xl font-bold text-white">
-                {formatCurrency(kpis.totalFacturado)}
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'SERVICIOS'}
+            onClick={() => setActiveTab('SERVICIOS')}
+            className={`inline-flex items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+              activeTab === 'SERVICIOS'
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+            }`}
+          >
+            <span>Catálogo de Servicios</span>
+            <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
+              {servicesLoading ? '…' : services.length}
+            </span>
+          </button>
+        </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {ALL_STATES.map((state) => {
-              const active = statusFilter === state
-              return (
+        {/* Pestaña 1: Tickets */}
+        {activeTab === 'TICKETS' && (
+          <div aria-label="Supervisión de Tickets">
+            {/* KPIs principales + Contadores por estado */}
+            <section aria-label="Resumen de tickets" className="mb-8 space-y-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <button
-                  key={state}
                   type="button"
-                  onClick={() => handleFilterChange(state)}
-                  className={`rounded-xl border bg-slate-900/60 p-3 text-left transition ${
-                    active
-                      ? 'border-emerald-500 bg-emerald-500/10 ring-1 ring-emerald-500/30'
-                      : KPI_CARD_STYLES[state]
+                  onClick={() => handleFilterChange('TODOS')}
+                  className={`rounded-2xl border bg-slate-900/70 p-4 text-left transition ${
+                    statusFilter === 'TODOS'
+                      ? 'border-emerald-500 ring-1 ring-emerald-500/30'
+                      : 'border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  <p className="text-xs font-medium text-slate-400">
-                    {STATUS_LABELS[state]}
+                  <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                    Total de tickets
                   </p>
-                  <p className="mt-1 text-xl font-bold text-white">
-                    {kpis.counts[state]}
+                  <p className="mt-1 text-2xl font-bold text-white">
+                    {kpis.total}
                   </p>
                 </button>
-              )
-            })}
-          </div>
-        </section>
 
-        {/* Alertas de acciones */}
-        {feedbackMessage && (
-          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
-            <span>{feedbackMessage}</span>
-            <button
-              type="button"
-              onClick={() => setFeedbackMessage(null)}
-              aria-label="Cerrar aviso"
-              className="shrink-0 text-xs text-emerald-200 hover:text-white"
-            >
-              ✕
-            </button>
-          </div>
-        )}
+                <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wider text-emerald-400">
+                    Total facturado (Finalizados)
+                  </p>
+                  <p className="mt-1 text-2xl font-bold text-white">
+                    {formatCurrency(kpis.totalFacturado)}
+                  </p>
+                </div>
+              </div>
 
-        {actionError && (
-          <div
-            role="alert"
-            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
-          >
-            <span>{actionError}</span>
-            <button
-              type="button"
-              onClick={() => setActionError(null)}
-              aria-label="Cerrar error"
-              className="shrink-0 text-xs text-rose-200 hover:text-white"
-            >
-              ✕
-            </button>
-          </div>
-        )}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                {ALL_STATES.map((state) => {
+                  const active = statusFilter === state
+                  return (
+                    <button
+                      key={state}
+                      type="button"
+                      onClick={() => handleFilterChange(state)}
+                      className={`rounded-xl border bg-slate-900/60 p-3 text-left transition ${
+                        active
+                          ? 'border-emerald-500 bg-emerald-500/10 ring-1 ring-emerald-500/30'
+                          : KPI_CARD_STYLES[state]
+                      }`}
+                    >
+                      <p className="text-xs font-medium text-slate-400">
+                        {STATUS_LABELS[state]}
+                      </p>
+                      <p className="mt-1 text-xl font-bold text-white">
+                        {kpis.counts[state]}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
 
-        {/* Controles de filtrado y búsqueda */}
-        <section aria-label="Filtros y búsqueda" className="mb-5 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div
-              role="tablist"
-              aria-label="Filtrar tickets por estado"
-              className="flex flex-wrap gap-2"
-            >
-              {STATUS_FILTERS.map((filter) => {
-                const active = statusFilter === filter.value
-                return (
-                  <button
-                    key={filter.value}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => handleFilterChange(filter.value)}
-                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                      active
-                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
-                        : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                    }`}
-                  >
-                    {filter.label}
-                  </button>
-                )
-              })}
-            </div>
-
-            <div className="relative w-full sm:w-72">
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Buscar por dirección, problema, ID o servicio…"
-                aria-label="Buscar tickets"
-                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-              />
-            </div>
-          </div>
-
-          <p className="text-xs text-slate-400">
-            {ticketsLoading
-              ? 'Cargando tickets…'
-              : `Mostrando ${visibleTickets.length} ${visibleTickets.length === 1 ? 'ticket' : 'tickets'}`}
-          </p>
-        </section>
-
-        {ticketsError && (
-          <div
-            role="alert"
-            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
-          >
-            <span>{ticketsError}</span>
-            <button
-              type="button"
-              onClick={() => void loadTickets(statusFilter, true)}
-              className="shrink-0 text-xs font-semibold text-rose-200 underline hover:text-white"
-            >
-              Reintentar
-            </button>
-          </div>
-        )}
-
-        {/* Listado global */}
-        {ticketsLoading ? (
-          <div className="space-y-3">
-            {[1, 2, 3, 4].map((item) => (
-              <div
-                key={item}
-                className="h-24 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
-              />
-            ))}
-          </div>
-        ) : visibleTickets.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
-            <p className="text-base font-medium text-slate-200">
-              No se encontraron tickets
-            </p>
-            <p className="mt-1.5 text-sm text-slate-400">
-              {searchQuery.trim()
-                ? 'Probá limpiando o ajustando tu búsqueda.'
-                : statusFilter !== 'TODOS'
-                  ? 'No hay tickets registrados en este estado.'
-                  : 'Todavía no hay solicitudes registradas en la plataforma.'}
-            </p>
-            {(searchQuery.trim() || statusFilter !== 'TODOS') && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('')
-                  if (statusFilter !== 'TODOS') {
-                    handleFilterChange('TODOS')
-                  }
-                }}
-                className="mt-4 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-500/50 hover:text-emerald-300"
-              >
-                Limpiar filtros
-              </button>
+            {/* Alertas de acciones */}
+            {feedbackMessage && (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                <span>{feedbackMessage}</span>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackMessage(null)}
+                  aria-label="Cerrar aviso"
+                  className="shrink-0 text-xs text-emerald-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
             )}
-          </div>
-        ) : (
-          <>
-            {/* Tabla en desktop */}
-            <div className="hidden overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl shadow-black/20 md:block">
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
-                      <th className="px-4 py-3.5 font-semibold">Servicio</th>
-                      <th className="px-4 py-3.5 font-semibold">Estado</th>
-                      <th className="px-4 py-3.5 font-semibold">Dirección</th>
-                      <th className="px-4 py-3.5 font-semibold">
-                        Cliente / Operario
-                      </th>
-                      <th className="px-4 py-3.5 font-semibold">Creado</th>
-                      <th className="px-4 py-3.5 font-semibold">Monto</th>
-                      <th className="px-4 py-3.5 text-right font-semibold">
-                        Acciones
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/80">
-                    {visibleTickets.map((ticket) => {
-                      const service = servicesMap.get(ticket.servicio_id)
-                      const isUpdating = updatingTicketId === ticket.id
-                      const canCancel = isCancellable(ticket.estado)
 
-                      return (
-                        <tr
-                          key={ticket.id}
-                          className="transition hover:bg-slate-800/40"
-                        >
-                          <td className="px-4 py-3.5 align-top">
-                            <p className="font-semibold text-white">
+            {actionError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{actionError}</span>
+                <button
+                  type="button"
+                  onClick={() => setActionError(null)}
+                  aria-label="Cerrar error"
+                  className="shrink-0 text-xs text-rose-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Controles de filtrado y búsqueda */}
+            <section aria-label="Filtros y búsqueda" className="mb-5 space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div
+                  role="tablist"
+                  aria-label="Filtrar tickets por estado"
+                  className="flex flex-wrap gap-2"
+                >
+                  {STATUS_FILTERS.map((filter) => {
+                    const active = statusFilter === filter.value
+                    return (
+                      <button
+                        key={filter.value}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => handleFilterChange(filter.value)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                          active
+                            ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                            : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                        }`}
+                      >
+                        {filter.label}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <div className="relative w-full sm:w-72">
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Buscar por dirección, problema, ID o servicio…"
+                    aria-label="Buscar tickets"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-400">
+                {ticketsLoading
+                  ? 'Cargando tickets…'
+                  : `Mostrando ${visibleTickets.length} ${visibleTickets.length === 1 ? 'ticket' : 'tickets'}`}
+              </p>
+            </section>
+
+            {ticketsError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{ticketsError}</span>
+                <button
+                  type="button"
+                  onClick={() => void loadTickets(statusFilter, true)}
+                  className="shrink-0 text-xs font-semibold text-rose-200 underline hover:text-white"
+                >
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {/* Listado global */}
+            {ticketsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3, 4].map((item) => (
+                  <div
+                    key={item}
+                    className="h-24 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
+                  />
+                ))}
+              </div>
+            ) : visibleTickets.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
+                <p className="text-base font-medium text-slate-200">
+                  No se encontraron tickets
+                </p>
+                <p className="mt-1.5 text-sm text-slate-400">
+                  {searchQuery.trim()
+                    ? 'Probá limpiando o ajustando tu búsqueda.'
+                    : statusFilter !== 'TODOS'
+                      ? 'No hay tickets registrados en este estado.'
+                      : 'Todavía no hay solicitudes registradas en la plataforma.'}
+                </p>
+                {(searchQuery.trim() || statusFilter !== 'TODOS') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('')
+                      if (statusFilter !== 'TODOS') {
+                        handleFilterChange('TODOS')
+                      }
+                    }}
+                    className="mt-4 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-500/50 hover:text-emerald-300"
+                  >
+                    Limpiar filtros
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* Tabla en desktop */}
+                <div className="hidden overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl shadow-black/20 md:block">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
+                          <th className="px-4 py-3.5 font-semibold">
+                            Servicio
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">Estado</th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Dirección
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Cliente / Operario
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">Creado</th>
+                          <th className="px-4 py-3.5 font-semibold">Monto</th>
+                          <th className="px-4 py-3.5 text-right font-semibold">
+                            Acciones
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {visibleTickets.map((ticket) => {
+                          const service = servicesMap.get(ticket.servicio_id)
+                          const isUpdating = updatingTicketId === ticket.id
+                          const canCancel = isCancellable(ticket.estado)
+
+                          return (
+                            <tr
+                              key={ticket.id}
+                              className="transition hover:bg-slate-800/40"
+                            >
+                              <td className="px-4 py-3.5 align-top">
+                                <p className="font-semibold text-white">
+                                  {service
+                                    ? service.nombre
+                                    : `Servicio #${ticket.servicio_id}`}
+                                </p>
+                                <p
+                                  className="mt-0.5 font-mono text-xs text-slate-500"
+                                  title={ticket.id}
+                                >
+                                  {shortId(ticket.id)}
+                                </p>
+                              </td>
+                              <td className="px-4 py-3.5 align-top">
+                                <StatusBadge status={ticket.estado} />
+                              </td>
+                              <td className="max-w-xs px-4 py-3.5 align-top">
+                                <p className="text-slate-200">
+                                  {ticket.direccion}
+                                </p>
+                                <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">
+                                  {ticket.descripcion_problema}
+                                </p>
+                              </td>
+                              <td className="px-4 py-3.5 align-top text-xs">
+                                <p className="text-slate-400">
+                                  Cli:{' '}
+                                  <span
+                                    className="font-mono text-slate-200"
+                                    title={ticket.cliente_id}
+                                  >
+                                    {shortId(ticket.cliente_id)}
+                                  </span>
+                                </p>
+                                <p className="mt-0.5 text-slate-400">
+                                  Op:{' '}
+                                  {ticket.operario_id ? (
+                                    <span
+                                      className="font-mono text-slate-200"
+                                      title={ticket.operario_id}
+                                    >
+                                      {shortId(ticket.operario_id)}
+                                    </span>
+                                  ) : (
+                                    <span className="italic text-slate-500">
+                                      Sin asignar
+                                    </span>
+                                  )}
+                                </p>
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs text-slate-300">
+                                {formatDate(ticket.created_at)}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs font-semibold text-white">
+                                {ticket.precio_final !== null ? (
+                                  formatCurrency(ticket.precio_final)
+                                ) : (
+                                  <span className="font-normal text-slate-500">
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3.5 align-top">
+                                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                  {ticket.estado === 'ASIGNADO' && (
+                                    <button
+                                      type="button"
+                                      disabled={isUpdating}
+                                      onClick={() =>
+                                        void handleAdvanceState(
+                                          ticket,
+                                          'EN_CAMINO',
+                                        )
+                                      }
+                                      className="rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
+                                    >
+                                      {isUpdating
+                                        ? 'Actualizando…'
+                                        : 'Marcar En Camino'}
+                                    </button>
+                                  )}
+                                  {ticket.estado === 'EN_CAMINO' && (
+                                    <button
+                                      type="button"
+                                      disabled={isUpdating}
+                                      onClick={() =>
+                                        void handleAdvanceState(
+                                          ticket,
+                                          'EN_PROGRESO',
+                                        )
+                                      }
+                                      className="rounded-lg bg-cyan-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-60"
+                                    >
+                                      {isUpdating
+                                        ? 'Actualizando…'
+                                        : 'Iniciar Trabajo'}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void loadTicketDetail(ticket.id)
+                                    }
+                                    className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
+                                  >
+                                    Ver detalle
+                                  </button>
+                                  {canCancel && (
+                                    <button
+                                      type="button"
+                                      disabled={isUpdating}
+                                      onClick={() => openCancelConfirm(ticket)}
+                                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:opacity-60"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Cards en móvil */}
+                <ul className="space-y-4 md:hidden">
+                  {visibleTickets.map((ticket) => {
+                    const service = servicesMap.get(ticket.servicio_id)
+                    const isUpdating = updatingTicketId === ticket.id
+                    const canCancel = isCancellable(ticket.estado)
+
+                    return (
+                      <li
+                        key={ticket.id}
+                        className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-black/20"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-base font-semibold text-white">
                               {service
                                 ? service.nombre
                                 : `Servicio #${ticket.servicio_id}`}
+                            </h3>
+                            <p className="mt-0.5 text-sm text-slate-300">
+                              {ticket.direccion}
                             </p>
-                            <p
-                              className="mt-0.5 font-mono text-xs text-slate-500"
-                              title={ticket.id}
-                            >
-                              {shortId(ticket.id)}
-                            </p>
-                          </td>
-                          <td className="px-4 py-3.5 align-top">
-                            <StatusBadge status={ticket.estado} />
-                          </td>
-                          <td className="max-w-xs px-4 py-3.5 align-top">
-                            <p className="text-slate-200">{ticket.direccion}</p>
-                            <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">
-                              {ticket.descripcion_problema}
-                            </p>
-                          </td>
-                          <td className="px-4 py-3.5 align-top text-xs">
-                            <p className="text-slate-400">
-                              Cli:{' '}
-                              <span
-                                className="font-mono text-slate-200"
-                                title={ticket.cliente_id}
-                              >
-                                {shortId(ticket.cliente_id)}
+                          </div>
+                          <StatusBadge status={ticket.estado} />
+                        </div>
+
+                        <p className="mt-2 line-clamp-2 text-xs text-slate-400">
+                          {ticket.descripcion_problema}
+                        </p>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-800/90 bg-slate-950/60 p-2.5 text-xs">
+                          <div>
+                            <span className="text-slate-500">Cliente: </span>
+                            <span className="font-mono text-slate-300">
+                              {shortId(ticket.cliente_id)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Operario: </span>
+                            {ticket.operario_id ? (
+                              <span className="font-mono text-slate-300">
+                                {shortId(ticket.operario_id)}
                               </span>
-                            </p>
-                            <p className="mt-0.5 text-slate-400">
-                              Op:{' '}
-                              {ticket.operario_id ? (
-                                <span
-                                  className="font-mono text-slate-200"
-                                  title={ticket.operario_id}
-                                >
-                                  {shortId(ticket.operario_id)}
-                                </span>
-                              ) : (
-                                <span className="italic text-slate-500">
-                                  Sin asignar
-                                </span>
-                              )}
-                            </p>
-                          </td>
-                          <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs text-slate-300">
-                            {formatDate(ticket.created_at)}
-                          </td>
-                          <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs font-semibold text-white">
-                            {ticket.precio_final !== null ? (
-                              formatCurrency(ticket.precio_final)
                             ) : (
-                              <span className="font-normal text-slate-500">
-                                —
+                              <span className="italic text-slate-500">
+                                Sin asignar
                               </span>
                             )}
-                          </td>
-                          <td className="px-4 py-3.5 align-top">
-                            <div className="flex flex-wrap items-center justify-end gap-1.5">
-                              {ticket.estado === 'ASIGNADO' && (
-                                <button
-                                  type="button"
-                                  disabled={isUpdating}
-                                  onClick={() =>
-                                    void handleAdvanceState(ticket, 'EN_CAMINO')
-                                  }
-                                  className="rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
-                                >
-                                  {isUpdating
-                                    ? 'Actualizando…'
-                                    : 'Marcar En Camino'}
-                                </button>
-                              )}
-                              {ticket.estado === 'EN_CAMINO' && (
-                                <button
-                                  type="button"
-                                  disabled={isUpdating}
-                                  onClick={() =>
-                                    void handleAdvanceState(
-                                      ticket,
-                                      'EN_PROGRESO',
-                                    )
-                                  }
-                                  className="rounded-lg bg-cyan-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-60"
-                                >
-                                  {isUpdating
-                                    ? 'Actualizando…'
-                                    : 'Iniciar Trabajo'}
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => void loadTicketDetail(ticket.id)}
-                                className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
-                              >
-                                Ver detalle
-                              </button>
-                              {canCancel && (
-                                <button
-                                  type="button"
-                                  disabled={isUpdating}
-                                  onClick={() => openCancelConfirm(ticket)}
-                                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:opacity-60"
-                                >
-                                  Cancelar
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Creado: </span>
+                            <span className="text-slate-300">
+                              {formatDate(ticket.created_at)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Monto: </span>
+                            <span className="font-semibold text-white">
+                              {ticket.precio_final !== null
+                                ? formatCurrency(ticket.precio_final)
+                                : '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2 pt-1">
+                          {ticket.estado === 'ASIGNADO' && (
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() =>
+                                void handleAdvanceState(ticket, 'EN_CAMINO')
+                              }
+                              className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
+                            >
+                              {isUpdating
+                                ? 'Actualizando…'
+                                : 'Marcar En Camino'}
+                            </button>
+                          )}
+                          {ticket.estado === 'EN_CAMINO' && (
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() =>
+                                void handleAdvanceState(ticket, 'EN_PROGRESO')
+                              }
+                              className="rounded-lg bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-60"
+                            >
+                              {isUpdating ? 'Actualizando…' : 'Iniciar Trabajo'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void loadTicketDetail(ticket.id)}
+                            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
+                          >
+                            Ver detalle
+                          </button>
+                          {canCancel && (
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => openCancelConfirm(ticket)}
+                              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:opacity-60"
+                            >
+                              Cancelar
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Pestaña 2: Catálogo de Servicios */}
+        {activeTab === 'SERVICIOS' && (
+          <section aria-label="Catálogo de Servicios">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Catálogo de Servicios
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Administrá los oficios disponibles y sus tarifas base de
+                  referencia.
+                </p>
               </div>
+
+              <button
+                type="button"
+                onClick={openCreateServiceModal}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 sm:text-sm"
+              >
+                <span aria-hidden className="text-base leading-none">
+                  +
+                </span>
+                <span>Nuevo servicio</span>
+              </button>
             </div>
 
-            {/* Cards en móvil */}
-            <ul className="space-y-4 md:hidden">
-              {visibleTickets.map((ticket) => {
-                const service = servicesMap.get(ticket.servicio_id)
-                const isUpdating = updatingTicketId === ticket.id
-                const canCancel = isCancellable(ticket.estado)
+            {catalogFeedback && (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                <span>{catalogFeedback}</span>
+                <button
+                  type="button"
+                  onClick={() => setCatalogFeedback(null)}
+                  aria-label="Cerrar confirmación"
+                  className="shrink-0 text-xs text-emerald-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
-                return (
-                  <li
-                    key={ticket.id}
-                    className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-black/20"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-base font-semibold text-white">
-                          {service
-                            ? service.nombre
-                            : `Servicio #${ticket.servicio_id}`}
-                        </h3>
-                        <p className="mt-0.5 text-sm text-slate-300">
-                          {ticket.direccion}
-                        </p>
-                      </div>
-                      <StatusBadge status={ticket.estado} />
-                    </div>
+            {servicesError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{servicesError}</span>
+                <button
+                  type="button"
+                  onClick={() => void loadServices()}
+                  className="shrink-0 text-xs font-semibold text-rose-200 underline hover:text-white"
+                >
+                  Reintentar
+                </button>
+              </div>
+            )}
 
-                    <p className="mt-2 line-clamp-2 text-xs text-slate-400">
-                      {ticket.descripcion_problema}
-                    </p>
+            {servicesLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3, 4].map((item) => (
+                  <div
+                    key={item}
+                    className="h-20 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
+                  />
+                ))}
+              </div>
+            ) : services.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
+                <p className="text-base font-medium text-slate-200">
+                  El catálogo de servicios está vacío
+                </p>
+                <p className="mt-1.5 text-sm text-slate-400">
+                  Agregá el primer oficio para que los clientes puedan crear
+                  solicitudes y los operarios elegir especialidades.
+                </p>
+                <button
+                  type="button"
+                  onClick={openCreateServiceModal}
+                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  + Crear primer servicio
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Tabla responsive en desktop */}
+                <div className="hidden overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl shadow-black/20 md:block">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
+                          <th className="px-4 py-3.5 font-semibold">ID</th>
+                          <th className="px-4 py-3.5 font-semibold">Nombre</th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Descripción
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Tarifa base
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">Alta</th>
+                          <th className="px-4 py-3.5 text-right font-semibold">
+                            Acciones
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {services.map((service) => (
+                          <tr
+                            key={service.id}
+                            className="transition hover:bg-slate-800/40"
+                          >
+                            <td className="whitespace-nowrap px-4 py-3.5 align-top font-mono text-xs text-slate-400">
+                              #{service.id}
+                            </td>
+                            <td className="px-4 py-3.5 align-top font-semibold text-white">
+                              {service.nombre}
+                            </td>
+                            <td className="max-w-md px-4 py-3.5 align-top text-slate-300">
+                              {service.descripcion ? (
+                                <p className="text-sm text-slate-300">
+                                  {service.descripcion}
+                                </p>
+                              ) : (
+                                <span className="italic text-xs text-slate-500">
+                                  Sin descripción
+                                </span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3.5 align-top font-semibold text-emerald-300">
+                              {formatCurrency(service.tarifa_base)}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs text-slate-400">
+                              {formatDate(service.created_at)}
+                            </td>
+                            <td className="px-4 py-3.5 align-top">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditServiceModal(service)}
+                                  className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
+                                >
+                                  Editar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openDeleteServiceConfirm(service)
+                                  }
+                                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20"
+                                >
+                                  Eliminar
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
 
-                    <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-800/90 bg-slate-950/60 p-2.5 text-xs">
-                      <div>
-                        <span className="text-slate-500">Cliente: </span>
-                        <span className="font-mono text-slate-300">
-                          {shortId(ticket.cliente_id)}
+                {/* Cards en móvil */}
+                <ul className="space-y-4 md:hidden">
+                  {services.map((service) => (
+                    <li
+                      key={service.id}
+                      className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-black/20"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <span className="font-mono text-xs text-slate-500">
+                            #{service.id}
+                          </span>
+                          <h3 className="text-base font-semibold text-white">
+                            {service.nombre}
+                          </h3>
+                        </div>
+                        <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-semibold text-emerald-300">
+                          {formatCurrency(service.tarifa_base)}
                         </span>
                       </div>
-                      <div>
-                        <span className="text-slate-500">Operario: </span>
-                        {ticket.operario_id ? (
-                          <span className="font-mono text-slate-300">
-                            {shortId(ticket.operario_id)}
-                          </span>
-                        ) : (
+
+                      <p className="mt-2 text-xs text-slate-300">
+                        {service.descripcion || (
                           <span className="italic text-slate-500">
-                            Sin asignar
+                            Sin descripción
                           </span>
                         )}
-                      </div>
-                      <div>
-                        <span className="text-slate-500">Creado: </span>
-                        <span className="text-slate-300">
-                          {formatDate(ticket.created_at)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500">Monto: </span>
-                        <span className="font-semibold text-white">
-                          {ticket.precio_final !== null
-                            ? formatCurrency(ticket.precio_final)
-                            : '—'}
-                        </span>
-                      </div>
-                    </div>
+                      </p>
 
-                    <div className="mt-3 flex flex-wrap items-center gap-2 pt-1">
-                      {ticket.estado === 'ASIGNADO' && (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() =>
-                            void handleAdvanceState(ticket, 'EN_CAMINO')
-                          }
-                          className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
-                        >
-                          {isUpdating ? 'Actualizando…' : 'Marcar En Camino'}
-                        </button>
-                      )}
-                      {ticket.estado === 'EN_CAMINO' && (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() =>
-                            void handleAdvanceState(ticket, 'EN_PROGRESO')
-                          }
-                          className="rounded-lg bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-60"
-                        >
-                          {isUpdating ? 'Actualizando…' : 'Iniciar Trabajo'}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => void loadTicketDetail(ticket.id)}
-                        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
-                      >
-                        Ver detalle
-                      </button>
-                      {canCancel && (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() => openCancelConfirm(ticket)}
-                          className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:opacity-60"
-                        >
-                          Cancelar
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          </>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/90 pt-3">
+                        <span className="text-xs text-slate-500">
+                          Alta: {formatDate(service.created_at)}
+                        </span>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditServiceModal(service)}
+                            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-emerald-500/60 hover:text-emerald-300"
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openDeleteServiceConfirm(service)}
+                            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20"
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </section>
         )}
       </main>
+
+      {/* Modal Crear / Editar Servicio */}
+      {serviceModalMode && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="service-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={closeServiceModal}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/60"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3
+                  id="service-modal-title"
+                  className="text-lg font-semibold text-white"
+                >
+                  {serviceModalMode === 'EDIT'
+                    ? 'Editar servicio'
+                    : 'Nuevo servicio'}
+                </h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  {serviceModalMode === 'EDIT'
+                    ? 'Modificá el nombre, la descripción o la tarifa base.'
+                    : 'Completá los datos del nuevo oficio para el catálogo.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingService}
+                onClick={closeServiceModal}
+                aria-label="Cerrar modal de servicio"
+                className="rounded-lg border border-slate-800 px-2.5 py-1 text-sm text-slate-400 transition hover:border-slate-700 hover:text-white disabled:opacity-60"
+              >
+                ✕
+              </button>
+            </div>
+
+            {serviceModalError && (
+              <p
+                role="alert"
+                className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300"
+              >
+                {serviceModalError}
+              </p>
+            )}
+
+            <form onSubmit={handleServiceSubmit} className="mt-5 space-y-4">
+              <div>
+                <label
+                  htmlFor="service-nombre"
+                  className="mb-1.5 block text-sm font-medium text-slate-300"
+                >
+                  Nombre del servicio
+                </label>
+                <input
+                  id="service-nombre"
+                  type="text"
+                  required
+                  maxLength={100}
+                  disabled={savingService}
+                  value={serviceNombreInput}
+                  onChange={(event) => {
+                    setServiceNombreInput(event.target.value)
+                    setServiceModalError(null)
+                  }}
+                  placeholder="Ej. Aire Acondicionado"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="service-descripcion"
+                  className="mb-1.5 block text-sm font-medium text-slate-300"
+                >
+                  Descripción{' '}
+                  <span className="font-normal text-slate-500">(opcional)</span>
+                </label>
+                <textarea
+                  id="service-descripcion"
+                  rows={3}
+                  disabled={savingService}
+                  value={serviceDescripcionInput}
+                  onChange={(event) => {
+                    setServiceDescripcionInput(event.target.value)
+                    setServiceModalError(null)
+                  }}
+                  placeholder="Detalle breve de los trabajos incluidos…"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="service-tarifa"
+                  className="mb-1.5 block text-sm font-medium text-slate-300"
+                >
+                  Tarifa base (ARS)
+                </label>
+                <input
+                  id="service-tarifa"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  disabled={savingService}
+                  value={serviceTarifaInput}
+                  onChange={(event) => {
+                    setServiceTarifaInput(event.target.value)
+                    setServiceModalError(null)
+                  }}
+                  placeholder="Ej. 25000"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 border-t border-slate-800 pt-4">
+                <button
+                  type="button"
+                  disabled={savingService}
+                  onClick={closeServiceModal}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingService}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingService && (
+                    <span
+                      aria-hidden
+                      className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
+                    />
+                  )}
+                  {savingService
+                    ? 'Guardando…'
+                    : serviceModalMode === 'EDIT'
+                      ? 'Guardar cambios'
+                      : 'Crear servicio'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Eliminación de Servicio */}
+      {serviceToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-service-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={closeDeleteServiceConfirm}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/60"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3
+              id="delete-service-title"
+              className="text-lg font-semibold text-white"
+            >
+              ¿Eliminar este servicio?
+            </h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Vas a eliminar permanentemente{' '}
+              <strong className="text-slate-200">
+                {serviceToDelete.nombre}
+              </strong>{' '}
+              ({formatCurrency(serviceToDelete.tarifa_base)}) del catálogo de la
+              plataforma.
+            </p>
+
+            {deleteServiceError && (
+              <p
+                role="alert"
+                className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-300"
+              >
+                {deleteServiceError}
+              </p>
+            )}
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={deletingService}
+                onClick={closeDeleteServiceConfirm}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deletingService}
+                onClick={() => void handleConfirmDeleteService()}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deletingService && (
+                  <span
+                    aria-hidden
+                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                  />
+                )}
+                {deletingService ? 'Eliminando…' : 'Sí, eliminar servicio'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Detalle del Ticket */}
       {detailTicketId && (

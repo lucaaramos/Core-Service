@@ -3,12 +3,14 @@ package infrastructure
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"core-service/internal/service/domain"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // PostgresServiceRepository implementa domain.ServiceRepository sobre PostgreSQL.
@@ -36,6 +38,91 @@ func (r *PostgresServiceRepository) GetAll(ctx context.Context) ([]domain.Servic
 	defer rows.Close()
 
 	return scanServices(rows)
+}
+
+// Create inserta un nuevo servicio y traduce violaciones de unicidad (23505) a ErrServiceNameAlreadyExists.
+func (r *PostgresServiceRepository) Create(ctx context.Context, nombre string, descripcion *string, tarifaBase float64) (*domain.Service, error) {
+	query := `
+		INSERT INTO services (nombre, descripcion, tarifa_base)
+		VALUES ($1, $2, $3)
+		RETURNING id, nombre, descripcion, tarifa_base, created_at
+	`
+
+	var s domain.Service
+	var desc sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, nombre, descripcion, tarifaBase).
+		Scan(&s.ID, &s.Nombre, &desc, &s.TarifaBase, &s.CreatedAt)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return nil, domain.ErrServiceNameAlreadyExists
+		}
+		return nil, fmt.Errorf("error creando servicio: %w", err)
+	}
+
+	if desc.Valid {
+		s.Descripcion = &desc.String
+	}
+
+	return &s, nil
+}
+
+// Update modifica un servicio existente y traduce no encontrado y colisión de nombre (23505).
+func (r *PostgresServiceRepository) Update(ctx context.Context, id int, nombre string, descripcion *string, tarifaBase float64) (*domain.Service, error) {
+	query := `
+		UPDATE services
+		SET nombre = $1, descripcion = $2, tarifa_base = $3
+		WHERE id = $4
+		RETURNING id, nombre, descripcion, tarifa_base, created_at
+	`
+
+	var s domain.Service
+	var desc sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, nombre, descripcion, tarifaBase, id).
+		Scan(&s.ID, &s.Nombre, &desc, &s.TarifaBase, &s.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrServiceNotFound
+		}
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return nil, domain.ErrServiceNameAlreadyExists
+		}
+		return nil, fmt.Errorf("error actualizando servicio: %w", err)
+	}
+
+	if desc.Valid {
+		s.Descripcion = &desc.String
+	}
+
+	return &s, nil
+}
+
+// Delete elimina un servicio por ID. Si tiene tickets vinculados (23503), devuelve ErrServiceHasLinkedTickets.
+func (r *PostgresServiceRepository) Delete(ctx context.Context, id int) error {
+	query := `DELETE FROM services WHERE id = $1`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return domain.ErrServiceHasLinkedTickets
+		}
+		return fmt.Errorf("error eliminando servicio: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error verificando filas eliminadas de servicio: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return domain.ErrServiceNotFound
+	}
+
+	return nil
 }
 
 // GetByOperarioID devuelve los servicios asociados a un operario ordenados por id ascendente.

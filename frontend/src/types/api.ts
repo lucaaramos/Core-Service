@@ -65,6 +65,12 @@ export interface Service {
   created_at: string
 }
 
+export interface ServicePayload {
+  nombre: string
+  descripcion?: string | null
+  tarifa_base: number
+}
+
 export interface UpdateMyServicesRequest {
   servicio_ids: number[]
 }
