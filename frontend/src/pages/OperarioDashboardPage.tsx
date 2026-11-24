@@ -14,6 +14,7 @@ import {
   cancelTicket,
   finishTicket,
   getAvailableTickets,
+  getMyRating,
   getTicketById,
   getTickets,
   requestEvidenceUploadUrl,
@@ -21,10 +22,12 @@ import {
   uploadFileToPresignedUrl,
 } from '../api/tickets'
 import { Navbar } from '../components/Navbar'
+import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type {
   MetodoPago,
   OperarioNextState,
+  OperarioRating,
   Service,
   Ticket,
   TicketDisponible,
@@ -94,6 +97,10 @@ export function OperarioDashboardPage() {
     null,
   )
   const [specialtiesError, setSpecialtiesError] = useState<string | null>(null)
+
+  // Reputación y reseñas del operario autenticado
+  const [myRating, setMyRating] = useState<OperarioRating | null>(null)
+  const [myRatingLoading, setMyRatingLoading] = useState(true)
 
   // Pestaña 1: Bolsa de Trabajo
   const [availableTickets, setAvailableTickets] = useState<TicketDisponible[]>(
@@ -228,9 +235,15 @@ export function OperarioDashboardPage() {
     setMyTicketsError(null)
     try {
       const estado = filter === 'TODOS' ? undefined : filter
-      const data = await getTickets(estado)
+      const [data, ratingData] = await Promise.all([
+        getTickets(estado),
+        getMyRating().catch(() => null),
+      ])
       if (requestId === myTicketsReqIdRef.current) {
         setMyTickets(data)
+        if (ratingData) {
+          setMyRating(ratingData)
+        }
       }
     } catch (err) {
       if (requestId === myTicketsReqIdRef.current) {
@@ -317,6 +330,21 @@ export function OperarioDashboardPage() {
       .finally(() => {
         if (!cancelled) {
           setMyServicesLoading(false)
+        }
+      })
+
+    getMyRating()
+      .then((data) => {
+        if (!cancelled) {
+          setMyRating(data)
+        }
+      })
+      .catch(() => {
+        // Fallback visual si no se puede consultar el rating inicial
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMyRatingLoading(false)
         }
       })
 
@@ -685,30 +713,54 @@ export function OperarioDashboardPage() {
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={openSpecialtiesSection}
-            className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition ${
-              !myServicesLoading && myServices.length === 0
-                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200 hover:border-amber-400 hover:bg-amber-500/20'
-                : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-emerald-500/60 hover:text-emerald-300'
-            }`}
-          >
-            <span>Mis Especialidades</span>
-            {myServicesLoading ? (
-              <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-bold text-slate-300">
-                …
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div
+              aria-label="Tu reputación promedio"
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs font-semibold text-amber-200"
+            >
+              <span aria-hidden className="text-sm text-amber-400">
+                ★
               </span>
-            ) : myServices.length === 0 ? (
-              <span className="rounded-full bg-amber-500/25 px-2 py-0.5 text-[11px] font-bold text-amber-200">
-                Sin configurar
-              </span>
-            ) : (
-              <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-bold text-emerald-300">
-                {myServices.length}
-              </span>
-            )}
-          </button>
+              {myRatingLoading ? (
+                <span className="text-slate-300">Cargando reputación…</span>
+              ) : !myRating || myRating.total_resenas === 0 ? (
+                <span className="text-slate-300">Sin reseñas aún</span>
+              ) : (
+                <span>
+                  {myRating.promedio.toFixed(1)}{' '}
+                  <span className="font-normal text-amber-200/80">
+                    ({myRating.total_resenas}{' '}
+                    {myRating.total_resenas === 1 ? 'reseña' : 'reseñas'})
+                  </span>
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={openSpecialtiesSection}
+              className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition ${
+                !myServicesLoading && myServices.length === 0
+                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-200 hover:border-amber-400 hover:bg-amber-500/20'
+                  : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-emerald-500/60 hover:text-emerald-300'
+              }`}
+            >
+              <span>Mis Especialidades</span>
+              {myServicesLoading ? (
+                <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-bold text-slate-300">
+                  …
+                </span>
+              ) : myServices.length === 0 ? (
+                <span className="rounded-full bg-amber-500/25 px-2 py-0.5 text-[11px] font-bold text-amber-200">
+                  Sin configurar
+                </span>
+              ) : (
+                <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-bold text-emerald-300">
+                  {myServices.length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Pestañas principales */}
@@ -1118,7 +1170,15 @@ export function OperarioDashboardPage() {
                           </p>
                         </div>
 
-                        <StatusBadge status={ticket.estado} />
+                        <div className="flex flex-wrap items-center gap-2">
+                          {ticket.resena && (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
+                              <StarRating value={ticket.resena.puntuacion} />
+                              <span>{ticket.resena.puntuacion}/5</span>
+                            </span>
+                          )}
+                          <StatusBadge status={ticket.estado} />
+                        </div>
                       </div>
 
                       <p className="mt-3 line-clamp-2 text-sm text-slate-400">
@@ -1572,6 +1632,38 @@ export function OperarioDashboardPage() {
                     </dl>
                   </div>
                 )}
+
+                {detailTicket.estado === 'FINALIZADO' &&
+                  detailTicket.resena && (
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+                          Calificación del cliente
+                        </h4>
+                        <span className="text-xs text-slate-400">
+                          {formatDate(detailTicket.resena.created_at)}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <StarRating
+                          value={detailTicket.resena.puntuacion}
+                          size="md"
+                        />
+                        <span className="text-sm font-semibold text-white">
+                          {detailTicket.resena.puntuacion} de 5
+                        </span>
+                      </div>
+                      {detailTicket.resena.comentario ? (
+                        <p className="mt-2.5 whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-200">
+                          {detailTicket.resena.comentario}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs italic text-slate-500">
+                          El cliente no dejó comentario escrito.
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                 <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
                   <button

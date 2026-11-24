@@ -20,6 +20,7 @@ import {
   updateTicketState,
 } from '../api/tickets'
 import { Navbar } from '../components/Navbar'
+import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type {
   OperarioNextState,
@@ -1754,6 +1755,38 @@ export function AdminDashboardPage() {
                     </dl>
                   </div>
                 )}
+
+                {detailTicket.estado === 'FINALIZADO' &&
+                  detailTicket.resena && (
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+                          Calificación del cliente
+                        </h4>
+                        <span className="text-xs text-slate-400">
+                          {formatDate(detailTicket.resena.created_at)}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <StarRating
+                          value={detailTicket.resena.puntuacion}
+                          size="md"
+                        />
+                        <span className="text-sm font-semibold text-white">
+                          {detailTicket.resena.puntuacion} de 5
+                        </span>
+                      </div>
+                      {detailTicket.resena.comentario ? (
+                        <p className="mt-2.5 whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-200">
+                          {detailTicket.resena.comentario}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs italic text-slate-500">
+                          Sin comentario escrito.
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                 <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
                   {isCancellable(detailTicket.estado) && (

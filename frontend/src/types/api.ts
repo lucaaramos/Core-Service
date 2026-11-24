@@ -75,6 +75,27 @@ export interface UpdateMyServicesRequest {
   servicio_ids: number[]
 }
 
+export interface TicketReview {
+  id: string
+  ticket_id: string
+  cliente_id: string
+  operario_id: string
+  puntuacion: number
+  comentario: string
+  created_at: string
+}
+
+export interface CreateReviewRequest {
+  puntuacion: number
+  comentario?: string
+}
+
+export interface OperarioRating {
+  promedio: number
+  total_resenas: number
+  resenas: TicketReview[]
+}
+
 export interface Ticket {
   id: string
   cliente_id: string
@@ -86,6 +107,7 @@ export interface Ticket {
   precio_final: number | null
   metodo_pago: MetodoPago | null
   evidencia_url: string | null
+  resena?: TicketReview
   created_at: string
   updated_at: string
 }

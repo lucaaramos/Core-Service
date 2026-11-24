@@ -30,13 +30,15 @@ const (
 )
 
 var (
-	ErrTicketNotFound         = errors.New("ticket no encontrado")
-	ErrTicketAlreadyAssigned  = errors.New("el ticket ya fue asignado a otro operario")
-	ErrInvalidStateTransition = errors.New("transición de estado inválida")
-	ErrInvalidTicketState     = errors.New("estado de ticket inválido")
-	ErrTicketAccessDenied        = errors.New("no tenés permiso para acceder a este ticket")
-	ErrOperarioMissingSpecialty  = errors.New("no tenés registrada la especialidad requerida para aceptar este trabajo")
-	ErrInvalidEvidenceType       = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
+	ErrTicketNotFound           = errors.New("ticket no encontrado")
+	ErrTicketAlreadyAssigned    = errors.New("el ticket ya fue asignado a otro operario")
+	ErrInvalidStateTransition   = errors.New("transición de estado inválida")
+	ErrInvalidTicketState       = errors.New("estado de ticket inválido")
+	ErrTicketAccessDenied       = errors.New("no tenés permiso para acceder a este ticket")
+	ErrOperarioMissingSpecialty = errors.New("no tenés registrada la especialidad requerida para aceptar este trabajo")
+	ErrInvalidEvidenceType      = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
+	ErrReviewAlreadyExists      = errors.New("este ticket ya fue calificado")
+	ErrInvalidReviewInput       = errors.New("datos de calificación inválidos")
 )
 
 // IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.
@@ -57,20 +59,39 @@ type TicketFilter struct {
 	Estado     *string
 }
 
+// TicketReview representa la calificación y reseña emitida por el cliente sobre un ticket finalizado.
+type TicketReview struct {
+	ID         uuid.UUID `json:"id"`
+	TicketID   uuid.UUID `json:"ticket_id"`
+	ClienteID  uuid.UUID `json:"cliente_id"`
+	OperarioID uuid.UUID `json:"operario_id"`
+	Puntuacion int       `json:"puntuacion"`
+	Comentario string    `json:"comentario"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// OperarioRating agrupa la reputación promedio y el historial de reseñas de un operario.
+type OperarioRating struct {
+	Promedio     float64        `json:"promedio"`
+	TotalResenas int            `json:"total_resenas"`
+	Resenas      []TicketReview `json:"resenas"`
+}
+
 // Ticket representa la entidad de dominio para una solicitud de servicio.
 type Ticket struct {
-	ID                  uuid.UUID   `json:"id"`
-	ClienteID           uuid.UUID   `json:"cliente_id"`
-	OperarioID          *uuid.UUID  `json:"operario_id"` // Puntero ya que puede ser nulo al inicio (CREADO)
-	ServicioID          int         `json:"servicio_id"`
-	Estado              TicketState `json:"estado"`
-	Direccion           string      `json:"direccion"`
-	DescripcionProblema string      `json:"descripcion_problema"`
-	PrecioFinal         *float64    `json:"precio_final"`  // Puntero ya que es nulo hasta finalizar
-	MetodoPago          *MetodoPago `json:"metodo_pago"`   // Puntero ya que es nulo hasta finalizar
-	EvidenciaURL        *string     `json:"evidencia_url"` // Puntero ya que es nulo hasta finalizar
-	CreatedAt           time.Time   `json:"created_at"`
-	UpdatedAt           time.Time   `json:"updated_at"`
+	ID                  uuid.UUID     `json:"id"`
+	ClienteID           uuid.UUID     `json:"cliente_id"`
+	OperarioID          *uuid.UUID    `json:"operario_id"` // Puntero ya que puede ser nulo al inicio (CREADO)
+	ServicioID          int           `json:"servicio_id"`
+	Estado              TicketState   `json:"estado"`
+	Direccion           string        `json:"direccion"`
+	DescripcionProblema string        `json:"descripcion_problema"`
+	PrecioFinal         *float64      `json:"precio_final"`     // Puntero ya que es nulo hasta finalizar
+	MetodoPago          *MetodoPago   `json:"metodo_pago"`      // Puntero ya que es nulo hasta finalizar
+	EvidenciaURL        *string       `json:"evidencia_url"`    // Puntero ya que es nulo hasta finalizar
+	Resena              *TicketReview `json:"resena,omitempty"` // Presente si el ticket finalizado ya fue calificado
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
 
 // AvailableTicket representa un ticket en la bolsa de trabajo (estado CREADO y sin operario),
@@ -113,4 +134,10 @@ type Repository interface {
 	// Finish registra precio final, método de pago y evidencia, y pasa el ticket a FINALIZADO
 	// en una sola operación atómica condicionada a que siga en estado EN_PROGRESO.
 	Finish(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago MetodoPago, evidenciaURL string) error
+
+	// CreateReview persiste la reseña de un ticket finalizado (traduce 23505 a ErrReviewAlreadyExists).
+	CreateReview(ctx context.Context, review *TicketReview) (*TicketReview, error)
+
+	// GetOperarioRating calcula el promedio, total y listado de reseñas de un operario.
+	GetOperarioRating(ctx context.Context, operarioID uuid.UUID) (*OperarioRating, error)
 }

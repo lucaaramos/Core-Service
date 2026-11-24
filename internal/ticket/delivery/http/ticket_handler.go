@@ -10,13 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// TicketHandler maneja las peticiones HTTP REST para los tickets utilizando Fiber.
+// TicketHandler maneja las peticiones HTTP REST para los tickets y calificaciones utilizando Fiber.
 type TicketHandler struct {
 	uc usecase.TicketUsecase
 }
 
-// NewTicketHandler crea un handler de tickets. El registro de rutas (con sus
-// middlewares de autenticación y roles) se realiza en cmd/api/main.go.
+// NewTicketHandler crea un handler de tickets.
 func NewTicketHandler(uc usecase.TicketUsecase) *TicketHandler {
 	return &TicketHandler{uc: uc}
 }
@@ -42,8 +41,12 @@ type evidenceUploadURLRequest struct {
 	ContentType string `json:"content_type"`
 }
 
+type rateTicketRequest struct {
+	Puntuacion int    `json:"puntuacion"`
+	Comentario string `json:"comentario"`
+}
+
 // ListTickets lista los tickets visibles según el rol del usuario autenticado.
-// Acepta el query param opcional ?estado=CREADO|ASIGNADO|EN_CAMINO|EN_PROGRESO|FINALIZADO|CANCELADO.
 func (h *TicketHandler) ListTickets(c *fiber.Ctx) error {
 	userID, ok := c.Locals("user_id").(uuid.UUID)
 	if !ok {
@@ -172,7 +175,7 @@ func (h *TicketHandler) UpdateState(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "estado actualizado exitosamente"})
 }
 
-// GenerateEvidenceUploadURL genera una Presigned PUT URL para subir la foto de evidencia a S3/MinIO.
+// GenerateEvidenceUploadURL genera una Presigned PUT URL para subir la foto de evidencia a S3.
 func (h *TicketHandler) GenerateEvidenceUploadURL(c *fiber.Ctx) error {
 	ticketUUID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -247,6 +250,46 @@ func (h *TicketHandler) CancelTicket(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "ticket cancelado exitosamente"})
 }
 
+// RateTicket registra la calificación (1..5) y comentario opcional del cliente sobre un ticket finalizado.
+func (h *TicketHandler) RateTicket(c *fiber.Ctx) error {
+	ticketUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
+	}
+
+	clienteID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "cliente no autenticado"})
+	}
+
+	var req rateTicketRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
+	}
+
+	review, err := h.uc.RateTicket(c.UserContext(), ticketUUID, clienteID, req.Puntuacion, req.Comentario)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(review)
+}
+
+// GetMyRating devuelve el promedio, total y listado de reseñas del operario autenticado.
+func (h *TicketHandler) GetMyRating(c *fiber.Ctx) error {
+	operarioID, ok := c.Locals("user_id").(uuid.UUID)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "operario no autenticado"})
+	}
+
+	rating, err := h.uc.GetOperarioRating(c.UserContext(), operarioID)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(rating)
+}
+
 // handleError traduce los errores de dominio a códigos de respuesta HTTP adecuados.
 func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	switch {
@@ -255,11 +298,13 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, domain.ErrTicketAccessDenied),
 		errors.Is(err, domain.ErrOperarioMissingSpecialty):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-	case errors.Is(err, domain.ErrTicketAlreadyAssigned):
+	case errors.Is(err, domain.ErrTicketAlreadyAssigned),
+		errors.Is(err, domain.ErrReviewAlreadyExists):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, domain.ErrInvalidStateTransition),
 		errors.Is(err, domain.ErrInvalidTicketState),
-		errors.Is(err, domain.ErrInvalidEvidenceType):
+		errors.Is(err, domain.ErrInvalidEvidenceType),
+		errors.Is(err, domain.ErrInvalidReviewInput):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})

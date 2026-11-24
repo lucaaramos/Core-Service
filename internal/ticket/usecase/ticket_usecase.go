@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"core-service/internal/storage"
 	"core-service/internal/ticket/domain"
@@ -12,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TicketUsecase define el contrato para los casos de negocio de tickets.
+// TicketUsecase define el contrato para los casos de negocio de tickets y reseñas.
 type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
 	ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error)
@@ -23,6 +24,21 @@ type TicketUsecase interface {
 	GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (uploadURL string, publicURL string, err error)
 	FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
 	CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error
+	RateTicket(ctx context.Context, ticketID, clienteID uuid.UUID, puntuacion int, comentario string) (*domain.TicketReview, error)
+	GetOperarioRating(ctx context.Context, operarioID uuid.UUID) (*domain.OperarioRating, error)
+}
+
+type ticketUsecase struct {
+	repo    domain.Repository
+	storage storage.ObjectStorage
+}
+
+// NewTicketUsecase crea una nueva instancia del caso de uso de tickets.
+func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorage) TicketUsecase {
+	return &ticketUsecase{
+		repo:    repo,
+		storage: objectStorage,
+	}
 }
 
 // ListTickets devuelve los tickets visibles para el usuario según su rol:
@@ -52,19 +68,6 @@ func (u *ticketUsecase) ListTickets(ctx context.Context, userID uuid.UUID, rol s
 	}
 
 	return tickets, nil
-}
-
-type ticketUsecase struct {
-	repo    domain.Repository
-	storage storage.ObjectStorage
-}
-
-// NewTicketUsecase crea una nueva instancia del caso de uso de tickets.
-func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorage) TicketUsecase {
-	return &ticketUsecase{
-		repo:    repo,
-		storage: objectStorage,
-	}
 }
 
 // CreateTicket instancia un nuevo ticket en estado CREADO y lo persiste.
@@ -137,9 +140,6 @@ func (u *ticketUsecase) GetTicket(ctx context.Context, ticketID, userID uuid.UUI
 }
 
 // UpdateTicketState valida la máquina de estados y actualiza el estado del ticket.
-// Solo permite avanzar entre ASIGNADO → EN_CAMINO → EN_PROGRESO: el cierre debe
-// hacerse por FinishTicket (con precio y método de pago) y la cancelación por CancelTicket.
-// El operario autenticado debe ser el asignado al ticket (evita IDOR entre operarios).
 func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
@@ -152,7 +152,6 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID 
 		}
 	}
 
-	// FINALIZADO y CANCELADO tienen endpoints dedicados.
 	if newState == domain.StateFinalizado || newState == domain.StateCancelado {
 		return fmt.Errorf("%w: %s debe gestionarse con su endpoint específico", domain.ErrInvalidStateTransition, newState)
 	}
@@ -176,9 +175,7 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID 
 	return u.repo.UpdateState(ctx, ticketID, newState)
 }
 
-// GenerateEvidenceUploadURL valida que el tipo MIME sea una imagen permitida, que el
-// ticket exista, pertenezca al operario autenticado y esté EN_PROGRESO, y genera una
-// Presigned PUT URL con clave única para subir la foto de evidencia a S3/MinIO.
+// GenerateEvidenceUploadURL genera una Presigned PUT URL con clave única para subir la foto de evidencia a S3.
 func (u *ticketUsecase) GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (string, string, error) {
 	normalizedType := strings.TrimSpace(strings.ToLower(contentType))
 
@@ -216,8 +213,7 @@ func (u *ticketUsecase) GenerateEvidenceUploadURL(ctx context.Context, ticketID,
 	return uploadURL, publicURL, nil
 }
 
-// FinishTicket valida que el ticket esté en progreso y que el operario autenticado sea el
-// asignado, y registra el precio final, el método de pago y la evidencia en una sola operación.
+// FinishTicket registra el precio final, el método de pago y la evidencia pasando el ticket a FINALIZADO.
 func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
@@ -263,6 +259,62 @@ func (u *ticketUsecase) CancelTicket(ctx context.Context, ticketID, userID uuid.
 	}
 
 	return u.repo.UpdateState(ctx, ticketID, domain.StateCancelado)
+}
+
+// RateTicket valida la puntuación (1..5), el comentario (<= 500 chars), la propiedad del cliente,
+// el estado FINALIZADO y que aún no exista reseña, y persiste la calificación.
+func (u *ticketUsecase) RateTicket(ctx context.Context, ticketID, clienteID uuid.UUID, puntuacion int, comentario string) (*domain.TicketReview, error) {
+	if puntuacion < 1 || puntuacion > 5 {
+		return nil, fmt.Errorf("%w: la puntuación debe estar entre 1 y 5", domain.ErrInvalidReviewInput)
+	}
+
+	cleanComentario := strings.TrimSpace(comentario)
+	if utf8.RuneCountInString(cleanComentario) > 500 {
+		return nil, fmt.Errorf("%w: el comentario no puede superar los 500 caracteres", domain.ErrInvalidReviewInput)
+	}
+
+	ticket, err := u.repo.FindByID(ctx, ticketID)
+	if err != nil {
+		return nil, err
+	}
+
+	if ticket.ClienteID != clienteID {
+		return nil, domain.ErrTicketAccessDenied
+	}
+
+	if ticket.Estado != domain.StateFinalizado {
+		return nil, fmt.Errorf("%w: solo se pueden calificar tickets en estado FINALIZADO", domain.ErrInvalidStateTransition)
+	}
+
+	if ticket.Resena != nil {
+		return nil, domain.ErrReviewAlreadyExists
+	}
+
+	if ticket.OperarioID == nil {
+		return nil, fmt.Errorf("%w: el ticket no tiene un operario asignado", domain.ErrInvalidReviewInput)
+	}
+
+	review := &domain.TicketReview{
+		ID:         uuid.New(),
+		TicketID:   ticket.ID,
+		ClienteID:  clienteID,
+		OperarioID: *ticket.OperarioID,
+		Puntuacion: puntuacion,
+		Comentario: cleanComentario,
+		CreatedAt:  time.Now(),
+	}
+
+	return u.repo.CreateReview(ctx, review)
+}
+
+// GetOperarioRating devuelve el promedio, cantidad y listado de reseñas recibidas por el operario.
+func (u *ticketUsecase) GetOperarioRating(ctx context.Context, operarioID uuid.UUID) (*domain.OperarioRating, error) {
+	rating, err := u.repo.GetOperarioRating(ctx, operarioID)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo reputación del operario: %w", err)
+	}
+
+	return rating, nil
 }
 
 // isTicketMember indica si el usuario participa del ticket como cliente o como operario asignado.
