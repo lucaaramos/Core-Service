@@ -1,6 +1,8 @@
 import { apiFetch } from './client'
 import type {
   CreateTicketRequest,
+  EvidenceUploadUrlRequest,
+  EvidenceUploadUrlResponse,
   FinishTicketRequest,
   MessageResponse,
   OperarioNextState,
@@ -51,6 +53,41 @@ export function updateTicketState(
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
+}
+
+/** POST /tickets/:id/evidencia/upload-url */
+export function requestEvidenceUploadUrl(
+  ticketId: string,
+  contentType: string,
+): Promise<EvidenceUploadUrlResponse> {
+  const payload: EvidenceUploadUrlRequest = { content_type: contentType }
+  return apiFetch<EvidenceUploadUrlResponse>(
+    `/tickets/${encodeURIComponent(ticketId)}/evidencia/upload-url`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+/** Sube un archivo directamente a la Presigned PUT URL de MinIO/S3 (sin Authorization). */
+export async function uploadFileToPresignedUrl(
+  uploadUrl: string,
+  file: File,
+): Promise<void> {
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': file.type,
+    },
+    body: file,
+  })
+
+  if (!response.ok) {
+    throw new Error(
+      `No se pudo subir la imagen de evidencia (HTTP ${response.status})`,
+    )
+  }
 }
 
 /** POST /tickets/:id/finalizar */
