@@ -1,8 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { RoleRedirect } from './components/RoleRedirect'
+import { AdminDashboardPage } from './pages/AdminDashboardPage'
 import { ClienteDashboardPage } from './pages/ClienteDashboardPage'
-import { DashboardPage } from './pages/DashboardPage'
 import { LoginPage } from './pages/LoginPage'
 import { OperarioDashboardPage } from './pages/OperarioDashboardPage'
 import { RegisterPage } from './pages/RegisterPage'
@@ -35,7 +35,7 @@ export default function App() {
         path="/admin"
         element={
           <ProtectedRoute roles={['ADMIN']}>
-            <DashboardPage expectedRole="ADMIN" />
+            <AdminDashboardPage />
           </ProtectedRoute>
         }
       />
