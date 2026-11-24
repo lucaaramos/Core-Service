@@ -20,10 +20,13 @@ import {
   getTickets,
   updateTicketState,
 } from '../api/tickets'
+import { getAdminOperarios, updateOperarioApproval } from '../api/users'
 import { Navbar } from '../components/Navbar'
 import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type {
+  ApprovalStatus,
+  OperarioAdminItem,
   OperarioNextState,
   Role,
   Service,
@@ -39,8 +42,9 @@ import {
   METODO_PAGO_LABELS,
 } from '../utils/format'
 
-type AdminTab = 'TICKETS' | 'SERVICIOS'
+type AdminTab = 'TICKETS' | 'SERVICIOS' | 'OPERARIOS'
 type StatusFilter = 'TODOS' | TicketStatus
+type OperarioApprovalFilter = 'TODOS' | ApprovalStatus
 type ServiceModalMode = 'CREATE' | 'EDIT' | null
 
 const ALL_STATES: TicketStatus[] = [
@@ -74,6 +78,37 @@ const ROLE_CHIP_STYLES: Record<Role, string> = {
   CLIENTE: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
   OPERARIO: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
   ADMIN: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
+}
+
+const OPERARIO_APPROVAL_FILTERS: Array<{
+  value: OperarioApprovalFilter
+  label: string
+}> = [
+  { value: 'TODOS', label: 'Todos' },
+  { value: 'PENDIENTE', label: 'Pendientes' },
+  { value: 'APROBADO', label: 'Aprobados' },
+  { value: 'RECHAZADO', label: 'Rechazados' },
+]
+
+const APPROVAL_BADGE_CONFIG: Record<
+  ApprovalStatus,
+  { label: string; badgeClass: string; dotClass: string }
+> = {
+  PENDIENTE: {
+    label: 'Pendiente',
+    badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+    dotClass: 'bg-amber-400',
+  },
+  APROBADO: {
+    label: 'Aprobado',
+    badgeClass: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    dotClass: 'bg-emerald-400',
+  },
+  RECHAZADO: {
+    label: 'Rechazado',
+    badgeClass: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    dotClass: 'bg-rose-400',
+  },
 }
 
 const STATUS_FILTERS: Array<{ value: StatusFilter; label: string }> = [
@@ -131,6 +166,24 @@ export function AdminDashboardPage() {
     null,
   )
 
+  // Pestaña 3: Gestión de Operarios (Aprobación)
+  const [allOperarios, setAllOperarios] = useState<OperarioAdminItem[]>([])
+  const [operarios, setOperarios] = useState<OperarioAdminItem[]>([])
+  const [operarioFilter, setOperarioFilter] =
+    useState<OperarioApprovalFilter>('TODOS')
+  const [operariosLoading, setOperariosLoading] = useState(true)
+  const [operariosError, setOperariosError] = useState<string | null>(null)
+  const [updatingOperarioId, setUpdatingOperarioId] = useState<string | null>(
+    null,
+  )
+  const [operariosFeedback, setOperariosFeedback] = useState<string | null>(
+    null,
+  )
+  const [operariosActionError, setOperariosActionError] = useState<
+    string | null
+  >(null)
+  const operariosReqIdRef = useRef(0)
+
   // Listado global (para KPIs sincronizados) y listado filtrado actual
   const [allTickets, setAllTickets] = useState<Ticket[]>([])
   const [tickets, setTickets] = useState<Ticket[]>([])
@@ -170,6 +223,12 @@ export function AdminDashboardPage() {
     }
     return map
   }, [services])
+
+  const pendingOperariosCount = useMemo(
+    () =>
+      allOperarios.filter((op) => op.estado_aprobacion === 'PENDIENTE').length,
+    [allOperarios],
+  )
 
   // KPIs calculados sobre el listado global
   const kpis = useMemo(() => {
@@ -238,6 +297,51 @@ export function AdminDashboardPage() {
       }
     }
   }, [])
+
+  const loadOperarios = useCallback(
+    async (filter: OperarioApprovalFilter, refreshGlobal = false) => {
+      const requestId = ++operariosReqIdRef.current
+      setOperariosLoading(true)
+      setOperariosError(null)
+
+      try {
+        if (filter === 'TODOS') {
+          const data = await getAdminOperarios()
+          if (requestId === operariosReqIdRef.current) {
+            setOperarios(data)
+            setAllOperarios(data)
+          }
+        } else if (refreshGlobal) {
+          const [filtered, global] = await Promise.all([
+            getAdminOperarios(filter),
+            getAdminOperarios(),
+          ])
+          if (requestId === operariosReqIdRef.current) {
+            setOperarios(filtered)
+            setAllOperarios(global)
+          }
+        } else {
+          const filtered = await getAdminOperarios(filter)
+          if (requestId === operariosReqIdRef.current) {
+            setOperarios(filtered)
+          }
+        }
+      } catch (err) {
+        if (requestId === operariosReqIdRef.current) {
+          setOperariosError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudo cargar el listado de operarios',
+          )
+        }
+      } finally {
+        if (requestId === operariosReqIdRef.current) {
+          setOperariosLoading(false)
+        }
+      }
+    },
+    [],
+  )
 
   const loadTickets = useCallback(
     async (filter: StatusFilter, refreshGlobal = false) => {
@@ -365,6 +469,29 @@ export function AdminDashboardPage() {
       .finally(() => {
         if (!cancelled && svcReqId === servicesReqIdRef.current) {
           setServicesLoading(false)
+        }
+      })
+
+    const opReqId = ++operariosReqIdRef.current
+    getAdminOperarios()
+      .then((data) => {
+        if (!cancelled && opReqId === operariosReqIdRef.current) {
+          setOperarios(data)
+          setAllOperarios(data)
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled && opReqId === operariosReqIdRef.current) {
+          setOperariosError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudo cargar el listado de operarios',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled && opReqId === operariosReqIdRef.current) {
+          setOperariosLoading(false)
         }
       })
 
@@ -628,6 +755,46 @@ export function AdminDashboardPage() {
     }
   }
 
+  // --- Handlers Gestión de Operarios ---
+  function handleOperarioFilterChange(nextFilter: OperarioApprovalFilter) {
+    setOperarioFilter(nextFilter)
+    void loadOperarios(nextFilter)
+  }
+
+  async function handleUpdateOperarioStatus(
+    operario: OperarioAdminItem,
+    nextStatus: 'APROBADO' | 'RECHAZADO',
+  ) {
+    setUpdatingOperarioId(operario.id)
+    setOperariosFeedback(null)
+    setOperariosActionError(null)
+
+    try {
+      const updated = await updateOperarioApproval(operario.id, nextStatus)
+      setOperariosFeedback(
+        nextStatus === 'APROBADO'
+          ? `Operario "${updated.nombre}" aprobado correctamente.`
+          : `Solicitud de "${updated.nombre}" marcada como rechazada.`,
+      )
+      await loadOperarios(operarioFilter, true)
+    } catch (err) {
+      setOperariosActionError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo actualizar el estado del operario',
+      )
+    } finally {
+      setUpdatingOperarioId(null)
+    }
+  }
+
+  const isCurrentTabLoading =
+    activeTab === 'TICKETS'
+      ? ticketsLoading
+      : activeTab === 'SERVICIOS'
+        ? servicesLoading
+        : operariosLoading
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <Navbar />
@@ -639,8 +806,8 @@ export function AdminDashboardPage() {
               Panel de Administración
             </h1>
             <p className="mt-1 text-sm text-slate-400">
-              Supervisión global de tickets, facturación y gestión del catálogo
-              de servicios.
+              Supervisión global de tickets, habilitación de operarios y
+              catálogo de servicios.
             </p>
           </div>
 
@@ -650,22 +817,20 @@ export function AdminDashboardPage() {
               if (activeTab === 'TICKETS') {
                 void loadTickets(statusFilter, true)
                 void loadServices()
-              } else {
+              } else if (activeTab === 'SERVICIOS') {
                 void loadServices()
+              } else {
+                void loadOperarios(operarioFilter, true)
               }
             }}
-            disabled={
-              activeTab === 'TICKETS' ? ticketsLoading : servicesLoading
-            }
+            disabled={isCurrentTabLoading}
             className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
           >
-            {(activeTab === 'TICKETS' ? ticketsLoading : servicesLoading)
-              ? 'Actualizando…'
-              : 'Actualizar'}
+            {isCurrentTabLoading ? 'Actualizando…' : 'Actualizar'}
           </button>
         </div>
 
-        {/* Pestañas principales: Tickets | Catálogo de Servicios */}
+        {/* Pestañas principales: Tickets | Catálogo de Servicios | Operarios */}
         <div
           role="tablist"
           aria-label="Secciones de administración"
@@ -703,6 +868,36 @@ export function AdminDashboardPage() {
             <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
               {servicesLoading ? '…' : services.length}
             </span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'OPERARIOS'}
+            onClick={() => setActiveTab('OPERARIOS')}
+            className={`inline-flex items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+              activeTab === 'OPERARIOS'
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+            }`}
+          >
+            <span>Operarios</span>
+            {operariosLoading ? (
+              <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
+                …
+              </span>
+            ) : pendingOperariosCount > 0 ? (
+              <span
+                title={`${pendingOperariosCount} pendientes de aprobación`}
+                className="rounded-full border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-xs font-bold text-amber-300"
+              >
+                {pendingOperariosCount}
+              </span>
+            ) : (
+              <span className="rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-bold text-slate-200">
+                {allOperarios.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -1393,6 +1588,342 @@ export function AdminDashboardPage() {
                       </div>
                     </li>
                   ))}
+                </ul>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* Pestaña 3: Operarios (Aprobación) */}
+        {activeTab === 'OPERARIOS' && (
+          <section aria-label="Gestión de Operarios">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Aprobación de Operarios
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Revisá las solicitudes de alta y habilitá o rechazá cuentas de
+                  operarios.
+                </p>
+              </div>
+
+              {pendingOperariosCount > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-300">
+                  <span
+                    aria-hidden
+                    className="h-2 w-2 rounded-full bg-amber-400"
+                  />
+                  {pendingOperariosCount}{' '}
+                  {pendingOperariosCount === 1
+                    ? 'pendiente de revisión'
+                    : 'pendientes de revisión'}
+                </span>
+              )}
+            </div>
+
+            {/* Filtro por estado de aprobación */}
+            <div
+              role="tablist"
+              aria-label="Filtrar operarios por estado de aprobación"
+              className="mb-5 flex flex-wrap gap-2"
+            >
+              {OPERARIO_APPROVAL_FILTERS.map((filter) => {
+                const active = operarioFilter === filter.value
+                return (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => handleOperarioFilterChange(filter.value)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                      active
+                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+                        : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    {filter.label}
+                  </button>
+                )
+              })}
+            </div>
+
+            {operariosFeedback && (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                <span>{operariosFeedback}</span>
+                <button
+                  type="button"
+                  onClick={() => setOperariosFeedback(null)}
+                  aria-label="Cerrar confirmación"
+                  className="shrink-0 text-xs text-emerald-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {operariosActionError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{operariosActionError}</span>
+                <button
+                  type="button"
+                  onClick={() => setOperariosActionError(null)}
+                  aria-label="Cerrar error"
+                  className="shrink-0 text-xs text-rose-200 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {operariosError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300"
+              >
+                <span>{operariosError}</span>
+                <button
+                  type="button"
+                  onClick={() => void loadOperarios(operarioFilter, true)}
+                  className="shrink-0 text-xs font-semibold text-rose-200 underline hover:text-white"
+                >
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {operariosLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((item) => (
+                  <div
+                    key={item}
+                    className="h-20 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
+                  />
+                ))}
+              </div>
+            ) : operarios.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
+                <p className="text-base font-medium text-slate-200">
+                  {operarioFilter === 'TODOS'
+                    ? 'Todavía no hay operarios registrados'
+                    : 'No hay operarios en este estado'}
+                </p>
+                <p className="mt-1.5 text-sm text-slate-400">
+                  {operarioFilter === 'TODOS'
+                    ? 'Cuando un profesional se registre como operario, aparecerá aquí para su aprobación.'
+                    : 'Probá seleccionando otro filtro o volvé a "Todos".'}
+                </p>
+                {operarioFilter !== 'TODOS' && (
+                  <button
+                    type="button"
+                    onClick={() => handleOperarioFilterChange('TODOS')}
+                    className="mt-4 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-500/50 hover:text-emerald-300"
+                  >
+                    Ver todos
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* Tabla responsive en desktop */}
+                <div className="hidden overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl shadow-black/20 md:block">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
+                          <th className="px-4 py-3.5 font-semibold">Nombre</th>
+                          <th className="px-4 py-3.5 font-semibold">Email</th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Teléfono
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">
+                            Fecha de alta
+                          </th>
+                          <th className="px-4 py-3.5 font-semibold">Estado</th>
+                          <th className="px-4 py-3.5 text-right font-semibold">
+                            Acciones
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {operarios.map((op) => {
+                          const badge =
+                            APPROVAL_BADGE_CONFIG[op.estado_aprobacion]
+                          const isRowUpdating = updatingOperarioId === op.id
+
+                          return (
+                            <tr
+                              key={op.id}
+                              className="transition hover:bg-slate-800/40"
+                            >
+                              <td className="px-4 py-3.5 align-top">
+                                <p className="font-semibold text-white">
+                                  {op.nombre}
+                                </p>
+                                <p
+                                  className="mt-0.5 font-mono text-xs text-slate-500"
+                                  title={op.id}
+                                >
+                                  {shortId(op.id)}
+                                </p>
+                              </td>
+                              <td className="px-4 py-3.5 align-top text-slate-200">
+                                {op.email}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3.5 align-top text-slate-300">
+                                {op.telefono || (
+                                  <span className="italic text-xs text-slate-500">
+                                    No informado
+                                  </span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3.5 align-top text-xs text-slate-400">
+                                {formatDate(op.created_at)}
+                              </td>
+                              <td className="px-4 py-3.5 align-top">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${badge.badgeClass}`}
+                                >
+                                  <span
+                                    aria-hidden
+                                    className={`h-1.5 w-1.5 rounded-full ${badge.dotClass}`}
+                                  />
+                                  {badge.label}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3.5 align-top">
+                                <div className="flex items-center justify-end gap-2">
+                                  {op.estado_aprobacion !== 'APROBADO' && (
+                                    <button
+                                      type="button"
+                                      disabled={isRowUpdating}
+                                      onClick={() =>
+                                        void handleUpdateOperarioStatus(
+                                          op,
+                                          'APROBADO',
+                                        )
+                                      }
+                                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isRowUpdating && (
+                                        <span
+                                          aria-hidden
+                                          className="h-3 w-3 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
+                                        />
+                                      )}
+                                      Aprobar
+                                    </button>
+                                  )}
+                                  {op.estado_aprobacion !== 'RECHAZADO' && (
+                                    <button
+                                      type="button"
+                                      disabled={isRowUpdating}
+                                      onClick={() =>
+                                        void handleUpdateOperarioStatus(
+                                          op,
+                                          'RECHAZADO',
+                                        )
+                                      }
+                                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      Rechazar
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Cards en móvil */}
+                <ul className="space-y-4 md:hidden">
+                  {operarios.map((op) => {
+                    const badge = APPROVAL_BADGE_CONFIG[op.estado_aprobacion]
+                    const isRowUpdating = updatingOperarioId === op.id
+
+                    return (
+                      <li
+                        key={op.id}
+                        className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-black/20"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-base font-semibold text-white">
+                              {op.nombre}
+                            </h3>
+                            <p className="mt-0.5 text-xs text-slate-300">
+                              {op.email}
+                            </p>
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${badge.badgeClass}`}
+                          >
+                            <span
+                              aria-hidden
+                              className={`h-1.5 w-1.5 rounded-full ${badge.dotClass}`}
+                            />
+                            {badge.label}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-800/90 bg-slate-950/60 p-2.5 text-xs">
+                          <div>
+                            <span className="text-slate-500">Teléfono: </span>
+                            <span className="text-slate-300">
+                              {op.telefono || 'No informado'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Alta: </span>
+                            <span className="text-slate-300">
+                              {formatDate(op.created_at)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-end gap-2 pt-1">
+                          {op.estado_aprobacion !== 'APROBADO' && (
+                            <button
+                              type="button"
+                              disabled={isRowUpdating}
+                              onClick={() =>
+                                void handleUpdateOperarioStatus(op, 'APROBADO')
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {isRowUpdating && (
+                                <span
+                                  aria-hidden
+                                  className="h-3 w-3 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
+                                />
+                              )}
+                              Aprobar
+                            </button>
+                          )}
+                          {op.estado_aprobacion !== 'RECHAZADO' && (
+                            <button
+                              type="button"
+                              disabled={isRowUpdating}
+                              onClick={() =>
+                                void handleUpdateOperarioStatus(op, 'RECHAZADO')
+                              }
+                              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-500/60 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Rechazar
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    )
+                  })}
                 </ul>
               </>
             )}

@@ -1,7 +1,10 @@
 import { apiFetch } from './client'
 import type {
+  ApprovalStatus,
   ChangePasswordRequest,
   MessageResponse,
+  OperarioAdminItem,
+  UpdateOperarioApprovalRequest,
   UpdateProfileRequest,
   UserProfile,
 } from '../types/api'
@@ -27,4 +30,27 @@ export function changePassword(
     method: 'PATCH',
     body: JSON.stringify(data),
   })
+}
+
+/** GET /admin/operarios (con filtro opcional ?estado=PENDIENTE|APROBADO|RECHAZADO) */
+export function getAdminOperarios(
+  estado?: ApprovalStatus,
+): Promise<OperarioAdminItem[]> {
+  const query = estado ? `?estado=${encodeURIComponent(estado)}` : ''
+  return apiFetch<OperarioAdminItem[]>(`/admin/operarios${query}`)
+}
+
+/** PATCH /admin/operarios/:id/aprobacion */
+export function updateOperarioApproval(
+  id: string,
+  estado: 'APROBADO' | 'RECHAZADO',
+): Promise<OperarioAdminItem> {
+  const payload: UpdateOperarioApprovalRequest = { estado_aprobacion: estado }
+  return apiFetch<OperarioAdminItem>(
+    `/admin/operarios/${encodeURIComponent(id)}/aprobacion`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
 }

@@ -21,10 +21,12 @@ import {
   updateTicketState,
   uploadFileToPresignedUrl,
 } from '../api/tickets'
+import { getMe } from '../api/users'
 import { Navbar } from '../components/Navbar'
 import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type {
+  ApprovalStatus,
   MetodoPago,
   OperarioNextState,
   OperarioRating,
@@ -81,6 +83,13 @@ function isCancellable(estado: TicketStatus): boolean {
 
 export function OperarioDashboardPage() {
   const [activeTab, setActiveTab] = useState<MainTab>('BOLSA')
+
+  // Estado de aprobación de la cuenta del operario (GET /users/me)
+  const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus | null>(
+    null,
+  )
+  const [approvalLoading, setApprovalLoading] = useState(true)
+  const approvalStatusRef = useRef<ApprovalStatus | null>(null)
 
   // Catálogo de servicios para mapear servicio_id -> nombre y configurar especialidades
   const [services, setServices] = useState<Service[]>([])
@@ -207,6 +216,16 @@ export function OperarioDashboardPage() {
   }, [])
 
   const loadAvailableTickets = useCallback(async () => {
+    if (
+      approvalStatusRef.current !== null &&
+      approvalStatusRef.current !== 'APROBADO'
+    ) {
+      setAvailableTickets([])
+      setAvailableError(null)
+      setAvailableLoading(false)
+      return
+    }
+
     const requestId = ++availableReqIdRef.current
     setAvailableLoading(true)
     setAvailableError(null)
@@ -217,11 +236,21 @@ export function OperarioDashboardPage() {
       }
     } catch (err) {
       if (requestId === availableReqIdRef.current) {
-        setAvailableError(
-          err instanceof Error
-            ? err.message
-            : 'No se pudo cargar la bolsa de trabajo',
-        )
+        if (err instanceof ApiError && err.status === 403) {
+          const me = await getMe().catch(() => null)
+          if (me) {
+            approvalStatusRef.current = me.estado_aprobacion
+            setApprovalStatus(me.estado_aprobacion)
+          }
+          setAvailableTickets([])
+          setAvailableError(null)
+        } else {
+          setAvailableError(
+            err instanceof Error
+              ? err.message
+              : 'No se pudo cargar la bolsa de trabajo',
+          )
+        }
       }
     } finally {
       if (requestId === availableReqIdRef.current) {
@@ -229,6 +258,26 @@ export function OperarioDashboardPage() {
       }
     }
   }, [])
+
+  const refreshApprovalStatus = useCallback(async () => {
+    setApprovalLoading(true)
+    try {
+      const me = await getMe()
+      approvalStatusRef.current = me.estado_aprobacion
+      setApprovalStatus(me.estado_aprobacion)
+      if (me.estado_aprobacion === 'APROBADO') {
+        await loadAvailableTickets()
+      } else {
+        setAvailableTickets([])
+        setAvailableError(null)
+        setAvailableLoading(false)
+      }
+    } catch {
+      // Mantiene el último estado conocido si falla temporalmente
+    } finally {
+      setApprovalLoading(false)
+    }
+  }, [loadAvailableTickets])
 
   const loadMyTickets = useCallback(async (filter: OperarioStatusFilter) => {
     const requestId = ++myTicketsReqIdRef.current
@@ -350,24 +399,52 @@ export function OperarioDashboardPage() {
       })
 
     const availReqId = ++availableReqIdRef.current
-    getAvailableTickets()
-      .then((data) => {
-        if (!cancelled && availReqId === availableReqIdRef.current) {
-          setAvailableTickets(data)
+    getMe()
+      .then(async (me) => {
+        if (cancelled) return
+        approvalStatusRef.current = me.estado_aprobacion
+        setApprovalStatus(me.estado_aprobacion)
+        setApprovalLoading(false)
+
+        if (me.estado_aprobacion !== 'APROBADO') {
+          if (availReqId === availableReqIdRef.current) {
+            setAvailableTickets([])
+            setAvailableError(null)
+            setAvailableLoading(false)
+          }
+          return
+        }
+
+        try {
+          const data = await getAvailableTickets()
+          if (!cancelled && availReqId === availableReqIdRef.current) {
+            setAvailableTickets(data)
+          }
+        } catch (err: unknown) {
+          if (!cancelled && availReqId === availableReqIdRef.current) {
+            setAvailableError(
+              err instanceof Error
+                ? err.message
+                : 'No se pudo cargar la bolsa de trabajo',
+            )
+          }
+        } finally {
+          if (!cancelled && availReqId === availableReqIdRef.current) {
+            setAvailableLoading(false)
+          }
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled && availReqId === availableReqIdRef.current) {
-          setAvailableError(
-            err instanceof Error
-              ? err.message
-              : 'No se pudo cargar la bolsa de trabajo',
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled && availReqId === availableReqIdRef.current) {
-          setAvailableLoading(false)
+        if (!cancelled) {
+          setApprovalLoading(false)
+          if (availReqId === availableReqIdRef.current) {
+            setAvailableError(
+              err instanceof Error
+                ? err.message
+                : 'No se pudo verificar el estado de tu cuenta',
+            )
+            setAvailableLoading(false)
+          }
         }
       })
 
@@ -477,9 +554,13 @@ export function OperarioDashboardPage() {
       setSpecialtiesFeedback(
         updated.length === 0
           ? 'Se actualizaron tus especialidades (ningún oficio seleccionado). Elegí al menos uno para ver solicitudes en la Bolsa de Trabajo.'
-          : 'Especialidades guardadas correctamente. Actualizamos tu Bolsa de Trabajo.',
+          : approvalStatus === 'APROBADO'
+            ? 'Especialidades guardadas correctamente. Actualizamos tu Bolsa de Trabajo.'
+            : 'Especialidades guardadas correctamente. Quedarán listas para cuando un administrador apruebe tu cuenta.',
       )
-      await loadAvailableTickets()
+      if (approvalStatus === 'APROBADO') {
+        await loadAvailableTickets()
+      }
     } catch (err) {
       setSpecialtiesError(
         err instanceof Error
@@ -767,6 +848,58 @@ export function OperarioDashboardPage() {
           </div>
         </div>
 
+        {/* Banners de estado de aprobación de la cuenta */}
+        {!approvalLoading && approvalStatus === 'PENDIENTE' && (
+          <div
+            role="status"
+            className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5 text-sm text-amber-100"
+          >
+            <div className="space-y-1">
+              <p className="font-semibold text-amber-200">
+                Tu cuenta está pendiente de aprobación por un administrador
+              </p>
+              <p className="text-xs text-amber-100/80 sm:text-sm">
+                Mientras un administrador revisa y habilita tu perfil, podés ir
+                configurando tus oficios en{' '}
+                <strong className="text-amber-200">Mis Especialidades</strong>{' '}
+                para recibir solicitudes apenas seas aprobado.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={openSpecialtiesSection}
+                className="rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-semibold text-slate-950 transition hover:bg-amber-300"
+              >
+                Configurar Mis Especialidades
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshApprovalStatus()}
+                className="rounded-lg border border-amber-400/40 bg-slate-950/60 px-3.5 py-2 text-xs font-medium text-amber-200 transition hover:border-amber-300 hover:text-white"
+              >
+                Verificar estado
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!approvalLoading && approvalStatus === 'RECHAZADO' && (
+          <div
+            role="alert"
+            className="mb-6 rounded-2xl border border-rose-500/40 bg-rose-500/10 p-5 text-sm text-rose-200"
+          >
+            <p className="font-semibold text-rose-200">
+              Tu solicitud de operario fue rechazada
+            </p>
+            <p className="mt-1 text-xs text-rose-200/80 sm:text-sm">
+              Un administrador rechazó la habilitación de tu cuenta de operario,
+              por lo que no podés visualizar ni aceptar trabajos de la Bolsa de
+              Trabajo. Si creés que se trata de un error, comunicate con soporte.
+            </p>
+          </div>
+        )}
+
         {/* Pestañas principales */}
         <div
           role="tablist"
@@ -888,15 +1021,23 @@ export function OperarioDashboardPage() {
               </div>
               <button
                 type="button"
-                onClick={() => void loadAvailableTickets()}
-                disabled={availableLoading}
+                onClick={() =>
+                  approvalStatus === 'APROBADO'
+                    ? void loadAvailableTickets()
+                    : void refreshApprovalStatus()
+                }
+                disabled={availableLoading || approvalLoading}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {availableLoading ? 'Actualizando…' : 'Actualizar'}
+                {availableLoading || approvalLoading
+                  ? 'Actualizando…'
+                  : 'Actualizar'}
               </button>
             </div>
 
-            {!myServicesLoading && myServices.length > 0 && (
+            {approvalStatus === 'APROBADO' &&
+              !myServicesLoading &&
+              myServices.length > 0 && (
               <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                 <span>Filtrando por tus oficios:</span>
                 {myServices.map((service) => (
@@ -926,7 +1067,7 @@ export function OperarioDashboardPage() {
               </div>
             )}
 
-            {availableLoading || myServicesLoading ? (
+            {availableLoading || myServicesLoading || approvalLoading ? (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {[1, 2, 3, 4].map((item) => (
                   <div
@@ -934,6 +1075,43 @@ export function OperarioDashboardPage() {
                     className="h-44 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/50"
                   />
                 ))}
+              </div>
+            ) : approvalStatus === 'PENDIENTE' ? (
+              <div className="rounded-2xl border border-dashed border-amber-500/40 bg-amber-500/5 px-6 py-14 text-center">
+                <p className="text-base font-semibold text-amber-200">
+                  Bolsa de Trabajo disponible tras la aprobación
+                </p>
+                <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
+                  Tu cuenta de operario se encuentra en revisión. Aprovechá para
+                  dejar listas tus especialidades y volvé a consultar en unos
+                  minutos.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={openSpecialtiesSection}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
+                  >
+                    Ir a Mis Especialidades
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshApprovalStatus()}
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white"
+                  >
+                    Comprobar aprobación
+                  </button>
+                </div>
+              </div>
+            ) : approvalStatus === 'RECHAZADO' ? (
+              <div className="rounded-2xl border border-dashed border-rose-500/40 bg-rose-500/5 px-6 py-14 text-center">
+                <p className="text-base font-semibold text-rose-200">
+                  Acceso a la Bolsa de Trabajo deshabilitado
+                </p>
+                <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
+                  Tu solicitud de alta como operario fue rechazada por un
+                  administrador.
+                </p>
               </div>
             ) : !myServicesError && myServices.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-amber-500/40 bg-amber-500/5 px-6 py-14 text-center">
