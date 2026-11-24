@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.8.0
+  version: 1.9.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -32,6 +32,8 @@ tags:
     description: Catálogo de servicios ofrecidos por la plataforma
   - name: Operarios
     description: Configuración de especialidades (oficios) del operario autenticado
+  - name: Admin
+    description: Gestión administrativa de aprobación de operarios
 paths:
   /api/v1/auth/register:
     post:
@@ -106,6 +108,123 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Credenciales inválidas (email inexistente o contraseña incorrecta)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/admin/operarios:
+    get:
+      summary: Listar Operarios (Admin)
+      description: |
+        Devuelve todos los usuarios con rol **OPERARIO**, ordenados por `created_at` descendente,
+        incluyendo su `estado_aprobacion` (`PENDIENTE`, `APROBADO`, `RECHAZADO`). Nunca expone `password_hash`.
+
+        Acepta el parámetro opcional `?estado=PENDIENTE|APROBADO|RECHAZADO`. Requiere rol **ADMIN**.
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: estado
+          in: query
+          required: false
+          description: Filtra operarios por estado de aprobación.
+          schema:
+            type: string
+            enum: [PENDIENTE, APROBADO, RECHAZADO]
+          example: "PENDIENTE"
+      responses:
+        '200':
+          description: Lista de operarios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OperarioAdminItem'
+        '400':
+          description: Parámetro estado inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol ADMIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/admin/operarios/{id}/aprobacion:
+    patch:
+      summary: Aprobar o Rechazar un Operario (Admin)
+      description: |
+        Actualiza el `estado_aprobacion` de un usuario con rol **OPERARIO** a `APROBADO` o `RECHAZADO`.
+        Requiere exclusivamente rol **ADMIN**.
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del usuario operario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperarioActualizarAprobacionRequest'
+      responses:
+        '200':
+          description: Estado de aprobación actualizado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperarioAdminItem'
+        '400':
+          description: UUID inválido, estado_aprobacion no permitido o el usuario no tiene rol OPERARIO
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol ADMIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Usuario no encontrado
           content:
             application/json:
               schema:
@@ -413,7 +532,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: El usuario autenticado no tiene rol OPERARIO
+          description: El usuario no tiene rol OPERARIO o su cuenta aún no está en estado APROBADO
           content:
             application/json:
               schema:
@@ -820,7 +939,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: El usuario no tiene rol OPERARIO o no posee la especialidad requerida para el ticket
+          description: El usuario no tiene rol OPERARIO, su cuenta no está APROBADO o no posee la especialidad requerida
           content:
             application/json:
               schema:
@@ -1374,6 +1493,11 @@ components:
           type: string
           enum: [CLIENTE, OPERARIO, ADMIN]
           example: "CLIENTE"
+        estado_aprobacion:
+          type: string
+          enum: [PENDIENTE, APROBADO, RECHAZADO]
+          description: PENDIENTE para nuevos registros OPERARIO; APROBADO para CLIENTE.
+          example: "APROBADO"
 
     UsuarioLoginRequest:
       type: object
@@ -1420,10 +1544,51 @@ components:
           type: string
           enum: [CLIENTE, OPERARIO, ADMIN]
           example: "CLIENTE"
+        estado_aprobacion:
+          type: string
+          enum: [PENDIENTE, APROBADO, RECHAZADO]
+          example: "APROBADO"
         created_at:
           type: string
           format: date-time
           example: "2026-11-12T19:00:00Z"
+
+    OperarioAdminItem:
+      type: object
+      description: Datos de un operario expuestos en el listado administrativo.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "f9f6a086-06eb-4f2a-a82c-21a9a52eb8ef"
+        nombre:
+          type: string
+          example: "Carlos Gómez"
+        email:
+          type: string
+          format: email
+          example: "carlos.gomez@example.com"
+        telefono:
+          type: string
+          example: "+54 11 4444-5555"
+        estado_aprobacion:
+          type: string
+          enum: [PENDIENTE, APROBADO, RECHAZADO]
+          example: "PENDIENTE"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-24T19:45:00Z"
+
+    OperarioActualizarAprobacionRequest:
+      type: object
+      required:
+        - estado_aprobacion
+      properties:
+        estado_aprobacion:
+          type: string
+          enum: [APROBADO, RECHAZADO]
+          example: "APROBADO"
 
     UsuarioActualizarPerfilRequest:
       type: object
