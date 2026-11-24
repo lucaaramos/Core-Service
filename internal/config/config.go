@@ -14,12 +14,16 @@ type Config struct {
 	// CORSAllowOrigins es la lista de orígenes permitidos separados por coma.
 	CORSAllowOrigins string
 
-	// Configuración de almacenamiento compatible con S3 (MinIO / AWS S3).
+	// Configuración de almacenamiento compatible con S3 (LocalStack / AWS S3).
 	S3PublicEndpoint string
 	S3Region         string
 	S3Bucket         string
 	S3AccessKey      string
 	S3SecretKey      string
+
+	// Configuración de mensajería asíncrona (RabbitMQ).
+	RabbitMQURL      string
+	RabbitMQExchange string
 }
 
 // Load construye la configuración a partir de las variables de entorno,
@@ -31,15 +35,17 @@ func Load() Config {
 		origins = defaultCORSAllowOrigins
 	}
 
-	s3Endpoint := strings.TrimRight(envOr("S3_PUBLIC_ENDPOINT", "http://localhost:9000"), "/")
+	s3Endpoint := strings.TrimRight(envOr("S3_PUBLIC_ENDPOINT", "http://localhost:4566"), "/")
 
 	return Config{
 		CORSAllowOrigins: origins,
 		S3PublicEndpoint: s3Endpoint,
 		S3Region:         envOr("S3_REGION", "us-east-1"),
 		S3Bucket:         envOr("S3_BUCKET", "evidencias"),
-		S3AccessKey:      envOr("S3_ACCESS_KEY", "minioadmin"),
-		S3SecretKey:      envOr("S3_SECRET_KEY", "minioadmin123"),
+		S3AccessKey:      envOr("S3_ACCESS_KEY", "test"),
+		S3SecretKey:      envOr("S3_SECRET_KEY", "test"),
+		RabbitMQURL:      strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		RabbitMQExchange: envOr("RABBITMQ_EXCHANGE", "tickets.events"),
 	}
 }
 

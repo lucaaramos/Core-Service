@@ -14,6 +14,7 @@ import (
 	authRepo "core-service/internal/auth/infrastructure"
 	authUsecase "core-service/internal/auth/usecase"
 	"core-service/internal/config"
+	"core-service/internal/messaging"
 	serviceDelivery "core-service/internal/service/delivery/http"
 	serviceRepo "core-service/internal/service/infrastructure"
 	serviceUsecase "core-service/internal/service/usecase"
@@ -69,11 +70,30 @@ func main() {
 		log.Fatalf("Error inicializando almacenamiento S3: %v", err)
 	}
 
+	var eventPublisher messaging.EventPublisher
+	var rmqPublisher *messaging.RabbitMQPublisher
+	if cfg.RabbitMQURL == "" {
+		log.Println("Aviso: RABBITMQ_URL vacío; usando NoopPublisher (sin broker)")
+		eventPublisher = messaging.NewNoopPublisher()
+	} else {
+		rmqPublisher, err = messaging.NewRabbitMQPublisher(cfg.RabbitMQURL, cfg.RabbitMQExchange)
+		if err != nil {
+			log.Fatalf("Error inicializando RabbitMQPublisher: %v", err)
+		}
+		defer func() {
+			if closeErr := rmqPublisher.Close(); closeErr != nil {
+				log.Printf("Error cerrando RabbitMQPublisher: %v", closeErr)
+			}
+		}()
+		eventPublisher = rmqPublisher
+		log.Printf("Conectado a RabbitMQ (exchange=%s)", cfg.RabbitMQExchange)
+	}
+
 	authRepoInstance := authRepo.NewPostgresAuthRepository(db)
 	authUC := authUsecase.NewAuthUsecase(authRepoInstance)
 
 	ticketRepoInstance := ticketRepo.NewPostgresTicketRepository(db)
-	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance, s3Storage)
+	ticketUC := ticketUsecase.NewTicketUsecase(ticketRepoInstance, s3Storage, eventPublisher)
 
 	serviceRepoInstance := serviceRepo.NewPostgresServiceRepository(db)
 	serviceUC := serviceUsecase.NewServiceUsecase(serviceRepoInstance)
@@ -81,7 +101,7 @@ func main() {
 	app := fiber.New(fiber.Config{AppName: "Core-Service API (MVP)"})
 	app.Use(logger.New())
 
-	// CORS: permite el frontend local. With AllowCredentials=true los orígenes deben ser
+	// CORS: permite el frontend local. Con AllowCredentials=true los orígenes deben ser
 	// explícitos (nunca "*"), por eso config.Load garantiza una lista concreta.
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.CORSAllowOrigins,
@@ -96,10 +116,10 @@ func main() {
 
 	v1 := app.Group("/api/v1")
 
-	// Rutas públicas de autenticación y protegidas de perfil (/users/me)
+	// Rutas públicas de autenticación y protegidas de perfil (/users/me) y admin (/admin/operarios)
 	authDelivery.NewAuthHandler(v1, authUC, jwtSecret)
 
-	// Rutas del catálogo de servicios (requieren autenticación)
+	// Rutas del catálogo de servicios y especialidades
 	serviceHandler := serviceDelivery.NewServiceHandler(serviceUC)
 	serviceDelivery.RegisterRoutes(v1, serviceHandler, jwtSecret)
 
@@ -110,7 +130,7 @@ func main() {
 	port := envOr("PORT", "8080")
 
 	// Graceful shutdown: escucha SIGINT/SIGTERM (docker compose down) y cierra
-	// ordenadamente el servidor HTTP y la conexión a PostgreSQL.
+	// ordenadamente el servidor HTTP, RabbitMQ y la conexión a PostgreSQL.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -129,6 +149,12 @@ func main() {
 
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		log.Printf("Error al apagar el servidor HTTP: %v", err)
+	}
+
+	if rmqPublisher != nil {
+		if err := rmqPublisher.Close(); err != nil {
+			log.Printf("Error al cerrar conexión a RabbitMQ: %v", err)
+		}
 	}
 
 	if err := db.Close(); err != nil {

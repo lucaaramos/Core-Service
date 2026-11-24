@@ -3,10 +3,12 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"core-service/internal/messaging"
 	"core-service/internal/storage"
 	"core-service/internal/ticket/domain"
 
@@ -30,15 +32,27 @@ type TicketUsecase interface {
 }
 
 type ticketUsecase struct {
-	repo    domain.Repository
-	storage storage.ObjectStorage
+	repo      domain.Repository
+	storage   storage.ObjectStorage
+	publisher messaging.EventPublisher
 }
 
 // NewTicketUsecase crea una nueva instancia del caso de uso de tickets.
-func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorage) TicketUsecase {
+// Si publisher es nil, utiliza NoopPublisher como fallback seguro.
+func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorage, publisher messaging.EventPublisher) TicketUsecase {
+	if publisher == nil {
+		publisher = messaging.NewNoopPublisher()
+	}
 	return &ticketUsecase{
-		repo:    repo,
-		storage: objectStorage,
+		repo:      repo,
+		storage:   objectStorage,
+		publisher: publisher,
+	}
+}
+
+func (u *ticketUsecase) publishEventSafe(ctx context.Context, routingKey string, event messaging.TicketEvent) {
+	if err := u.publisher.Publish(ctx, routingKey, event); err != nil {
+		log.Printf("[WARN] no se pudo publicar evento %s (ticket=%s): %v", routingKey, event.TicketID, err)
 	}
 }
 
@@ -86,6 +100,16 @@ func (u *ticketUsecase) CreateTicket(ctx context.Context, clienteID uuid.UUID, s
 	if err := u.repo.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("error al crear el ticket en el repositorio: %w", err)
 	}
+
+	u.publishEventSafe(ctx, messaging.EventTicketCreated, messaging.TicketEvent{
+		EventType:  messaging.EventTicketCreated,
+		TicketID:   t.ID,
+		ServicioID: t.ServicioID,
+		ClienteID:  t.ClienteID,
+		OperarioID: nil,
+		Estado:     string(t.Estado),
+		OccurredAt: time.Now().UTC(),
+	})
 
 	return t, nil
 }
@@ -144,6 +168,18 @@ func (u *ticketUsecase) AssignTicket(ctx context.Context, ticketID, operarioID u
 	if err := u.repo.AssignOperario(ctx, ticketID, operarioID); err != nil {
 		return err
 	}
+
+	opID := operarioID
+	u.publishEventSafe(ctx, messaging.EventTicketAssigned, messaging.TicketEvent{
+		EventType:  messaging.EventTicketAssigned,
+		TicketID:   ticket.ID,
+		ServicioID: ticket.ServicioID,
+		ClienteID:  ticket.ClienteID,
+		OperarioID: &opID,
+		Estado:     string(domain.StateAsignado),
+		OccurredAt: time.Now().UTC(),
+	})
+
 	return nil
 }
 
@@ -275,6 +311,17 @@ func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID, userID uuid.
 	if err := u.repo.Finish(ctx, ticketID, userID, precioFinal, metodoPago, evidenciaURL); err != nil {
 		return err
 	}
+
+	opID := userID
+	u.publishEventSafe(ctx, messaging.EventTicketFinished, messaging.TicketEvent{
+		EventType:  messaging.EventTicketFinished,
+		TicketID:   ticket.ID,
+		ServicioID: ticket.ServicioID,
+		ClienteID:  ticket.ClienteID,
+		OperarioID: &opID,
+		Estado:     string(domain.StateFinalizado),
+		OccurredAt: time.Now().UTC(),
+	})
 
 	return nil
 }
