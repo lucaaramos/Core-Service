@@ -10,9 +10,10 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copiar el resto del código y compilar un binario estático optimizado
+# Copiar el resto del código y compilar ambos binarios estáticos optimizados (API y Worker)
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/api ./cmd/api/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/api ./cmd/api/main.go \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/worker ./cmd/worker/main.go
 
 # ---------- Stage 2: runtime ----------
 FROM alpine:latest
@@ -24,8 +25,9 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 WORKDIR /app
 
-# Copiar únicamente el binario compilado
+# Copiar los binarios compilados (api por defecto, worker invocable vía entrypoint)
 COPY --from=builder /app/api /app/api
+COPY --from=builder /app/worker /app/worker
 
 USER appuser
 
