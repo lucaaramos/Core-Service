@@ -109,8 +109,51 @@ func (m *ticketModel) toDomain() (*domain.Ticket, error) {
 	return t, nil
 }
 
-// Create persiste un nuevo ticket en la base de datos PostgreSQL.
+func insertHistoryTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	ticketID uuid.UUID,
+	estadoAnterior *domain.TicketState,
+	estadoNuevo domain.TicketState,
+	usuarioID uuid.UUID,
+	motivo string,
+) error {
+	query := `
+		INSERT INTO ticket_history (id, ticket_id, estado_anterior, estado_nuevo, usuario_id, motivo, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+	`
+
+	var prevVal interface{}
+	if estadoAnterior != nil {
+		prevVal = string(*estadoAnterior)
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		query,
+		uuid.New(),
+		ticketID,
+		prevVal,
+		string(estadoNuevo),
+		usuarioID,
+		motivo,
+	); err != nil {
+		return fmt.Errorf("error registrando auditoría en ticket_history: %w", err)
+	}
+
+	return nil
+}
+
+// Create persiste un nuevo ticket y registra atómicamente su creación en ticket_history.
 func (r *PostgresTicketRepository) Create(ctx context.Context, t *domain.Ticket) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error iniciando transacción al crear ticket: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
 	query := `
 		INSERT INTO tickets (id, cliente_id, operario_id, servicio_id, estado, direccion, descripcion_problema, precio_final, metodo_pago, evidencia_url, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -136,7 +179,7 @@ func (r *PostgresTicketRepository) Create(ctx context.Context, t *domain.Ticket)
 		evidenciaURLVal = *t.EvidenciaURL
 	}
 
-	_, err := r.db.ExecContext(
+	if _, err := tx.ExecContext(
 		ctx,
 		query,
 		t.ID,
@@ -151,10 +194,16 @@ func (r *PostgresTicketRepository) Create(ctx context.Context, t *domain.Ticket)
 		evidenciaURLVal,
 		t.CreatedAt,
 		t.UpdatedAt,
-	)
-
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("error creando ticket en postgres: %w", err)
+	}
+
+	if err := insertHistoryTx(ctx, tx, t.ID, nil, t.Estado, t.ClienteID, ""); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error confirmando creación de ticket: %w", err)
 	}
 
 	return nil
@@ -344,9 +393,17 @@ func (r *PostgresTicketRepository) HasOperarioSpecialty(ctx context.Context, ope
 	return exists, nil
 }
 
-// AssignOperario maneja la concurrencia al aceptar un ticket mediante la cláusula WHERE estado = 'CREADO'
-// y asegura atómicamente que el operario conserve la especialidad requerida.
+// AssignOperario maneja la concurrencia al aceptar un ticket (WHERE estado = 'CREADO'),
+// asegura la especialidad y registra atómicamente CREADO -> ASIGNADO en ticket_history.
 func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error iniciando transacción en asignación: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
 	query := `
 		UPDATE tickets
 		SET operario_id = $1, estado = $2, updated_at = NOW()
@@ -358,7 +415,7 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 		  )
 	`
 
-	result, err := r.db.ExecContext(ctx, query, operarioID, string(domain.StateAsignado), ticketID, string(domain.StateCreado))
+	result, err := tx.ExecContext(ctx, query, operarioID, string(domain.StateAsignado), ticketID, string(domain.StateCreado))
 	if err != nil {
 		return fmt.Errorf("error ejecutando asignación de operario: %w", err)
 	}
@@ -371,16 +428,17 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 	if rowsAffected == 0 {
 		var servicioID int
 		checkQuery := `SELECT servicio_id FROM tickets WHERE id = $1`
-		if err := r.db.QueryRowContext(ctx, checkQuery, ticketID).Scan(&servicioID); err != nil {
+		if err := tx.QueryRowContext(ctx, checkQuery, ticketID).Scan(&servicioID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return domain.ErrTicketNotFound
 			}
 			return fmt.Errorf("error verificando existencia del ticket: %w", err)
 		}
 
-		hasSpecialty, err := r.HasOperarioSpecialty(ctx, operarioID, servicioID)
-		if err != nil {
-			return err
+		var hasSpecialty bool
+		specQuery := `SELECT EXISTS(SELECT 1 FROM operario_services WHERE operario_id = $1 AND servicio_id = $2)`
+		if err := tx.QueryRowContext(ctx, specQuery, operarioID, servicioID).Scan(&hasSpecialty); err != nil {
+			return fmt.Errorf("error consultando especialidad de operario: %w", err)
 		}
 		if !hasSpecialty {
 			return domain.ErrOperarioMissingSpecialty
@@ -389,18 +447,42 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 		return domain.ErrTicketAlreadyAssigned
 	}
 
+	prev := domain.StateCreado
+	if err := insertHistoryTx(ctx, tx, ticketID, &prev, domain.StateAsignado, operarioID, ""); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error confirmando transacción de asignación: %w", err)
+	}
+
 	return nil
 }
 
-// UpdateState actualiza el estado del ticket en la máquina de estados.
-func (r *PostgresTicketRepository) UpdateState(ctx context.Context, ticketID uuid.UUID, newState domain.TicketState) error {
+// UpdateState actualiza el estado del ticket verificando que continúe en prevState
+// y registra atómicamente la transición en ticket_history.
+func (r *PostgresTicketRepository) UpdateState(
+	ctx context.Context,
+	ticketID uuid.UUID,
+	prevState, newState domain.TicketState,
+	usuarioID uuid.UUID,
+	motivo string,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error iniciando transacción de actualización de estado: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
 	query := `
 		UPDATE tickets
 		SET estado = $1, updated_at = NOW()
-		WHERE id = $2
+		WHERE id = $2 AND estado = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, string(newState), ticketID)
+	result, err := tx.ExecContext(ctx, query, string(newState), ticketID, string(prevState))
 	if err != nil {
 		return fmt.Errorf("error actualizando estado del ticket: %w", err)
 	}
@@ -411,15 +493,44 @@ func (r *PostgresTicketRepository) UpdateState(ctx context.Context, ticketID uui
 	}
 
 	if rowsAffected == 0 {
-		return domain.ErrTicketNotFound
+		var exists bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM tickets WHERE id = $1)", ticketID).Scan(&exists); err != nil {
+			return fmt.Errorf("error verificando existencia del ticket: %w", err)
+		}
+		if !exists {
+			return domain.ErrTicketNotFound
+		}
+		return domain.ErrInvalidStateTransition
+	}
+
+	if err := insertHistoryTx(ctx, tx, ticketID, &prevState, newState, usuarioID, motivo); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error confirmando cambio de estado del ticket: %w", err)
 	}
 
 	return nil
 }
 
-// Finish registra el cierre del trabajo: precio final, método de pago, evidencia y estado FINALIZADO,
-// condicionado a que el ticket siga en EN_PROGRESO para evitar cierres concurrentes o inconsistentes.
-func (r *PostgresTicketRepository) Finish(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
+// Finish registra el cierre del trabajo (EN_PROGRESO -> FINALIZADO) junto con su auditoría en una sola transacción.
+func (r *PostgresTicketRepository) Finish(
+	ctx context.Context,
+	ticketID uuid.UUID,
+	operarioID uuid.UUID,
+	precioFinal float64,
+	metodoPago domain.MetodoPago,
+	evidenciaURL string,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error iniciando transacción de finalización: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
 	query := `
 		UPDATE tickets
 		SET precio_final = $1, metodo_pago = $2, evidencia_url = $3, estado = $4, updated_at = NOW()
@@ -431,7 +542,7 @@ func (r *PostgresTicketRepository) Finish(ctx context.Context, ticketID uuid.UUI
 		evidencia = evidenciaURL
 	}
 
-	result, err := r.db.ExecContext(ctx, query,
+	result, err := tx.ExecContext(ctx, query,
 		precioFinal,
 		string(metodoPago),
 		evidencia,
@@ -452,7 +563,69 @@ func (r *PostgresTicketRepository) Finish(ctx context.Context, ticketID uuid.UUI
 		return domain.ErrInvalidStateTransition
 	}
 
+	prev := domain.StateEnProgreso
+	if err := insertHistoryTx(ctx, tx, ticketID, &prev, domain.StateFinalizado, operarioID, ""); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error confirmando finalización de ticket: %w", err)
+	}
+
 	return nil
+}
+
+// GetHistoryByTicketID consulta la línea de tiempo de auditoría de un ticket junto con los datos del usuario autor.
+func (r *PostgresTicketRepository) GetHistoryByTicketID(ctx context.Context, ticketID uuid.UUID) ([]domain.TicketHistoryEntry, error) {
+	query := `
+		SELECT
+			th.id, th.ticket_id, th.estado_anterior, th.estado_nuevo,
+			th.usuario_id, u.nombre, u.rol, th.motivo, th.created_at
+		FROM ticket_history th
+		INNER JOIN users u ON u.id = th.usuario_id
+		WHERE th.ticket_id = $1
+		ORDER BY th.created_at ASC, th.id ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("error consultando historial del ticket: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]domain.TicketHistoryEntry, 0)
+	for rows.Next() {
+		var entry domain.TicketHistoryEntry
+		var estadoAnt sql.NullString
+		var estadoNuevo string
+
+		if err := rows.Scan(
+			&entry.ID,
+			&entry.TicketID,
+			&estadoAnt,
+			&estadoNuevo,
+			&entry.UsuarioID,
+			&entry.UsuarioNombre,
+			&entry.UsuarioRol,
+			&entry.Motivo,
+			&entry.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("error escaneando registro de historial: %w", err)
+		}
+
+		if estadoAnt.Valid {
+			prev := domain.TicketState(estadoAnt.String)
+			entry.EstadoAnterior = &prev
+		}
+		entry.EstadoNuevo = domain.TicketState(estadoNuevo)
+		entries = append(entries, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterando historial del ticket: %w", err)
+	}
+
+	return entries, nil
 }
 
 // CreateReview inserta una nueva reseña sobre un ticket finalizado (traduce 23505 a ErrReviewAlreadyExists).

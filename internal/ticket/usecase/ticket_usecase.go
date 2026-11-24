@@ -13,17 +13,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// TicketUsecase define el contrato para los casos de negocio de tickets y reseñas.
+// TicketUsecase define el contrato para los casos de negocio de tickets, historial y reseñas.
 type TicketUsecase interface {
 	CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error)
 	ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error)
 	GetTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) (*domain.Ticket, error)
+	GetTicketHistory(ctx context.Context, ticketID uuid.UUID) ([]domain.TicketHistoryEntry, error)
 	GetAvailableTickets(ctx context.Context, operarioID uuid.UUID) ([]domain.AvailableTicket, error)
 	AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error
 	UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error
 	GenerateEvidenceUploadURL(ctx context.Context, ticketID, userID uuid.UUID, contentType string) (uploadURL string, publicURL string, err error)
 	FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error
-	CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error
+	CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol, motivo string) error
 	RateTicket(ctx context.Context, ticketID, clienteID uuid.UUID, puntuacion int, comentario string) (*domain.TicketReview, error)
 	GetOperarioRating(ctx context.Context, operarioID uuid.UUID) (*domain.OperarioRating, error)
 }
@@ -41,9 +42,7 @@ func NewTicketUsecase(repo domain.Repository, objectStorage storage.ObjectStorag
 	}
 }
 
-// ListTickets devuelve los tickets visibles para el usuario según su rol:
-// CLIENTE ve solo los suyos como cliente, OPERARIO solo los asignados a él y ADMIN ve todos.
-// Opcionalmente se filtra por estado (validado contra la máquina de estados).
+// ListTickets devuelve los tickets visibles para el usuario según su rol.
 func (u *ticketUsecase) ListTickets(ctx context.Context, userID uuid.UUID, rol string, estado *string) ([]domain.Ticket, error) {
 	if estado != nil && !domain.IsValidTicketState(*estado) {
 		return nil, fmt.Errorf("%w: %s", domain.ErrInvalidTicketState, *estado)
@@ -70,7 +69,7 @@ func (u *ticketUsecase) ListTickets(ctx context.Context, userID uuid.UUID, rol s
 	return tickets, nil
 }
 
-// CreateTicket instancia un nuevo ticket en estado CREADO y lo persiste.
+// CreateTicket instancia un nuevo ticket en estado CREADO y lo persiste junto con su auditoría inicial.
 func (u *ticketUsecase) CreateTicket(ctx context.Context, clienteID uuid.UUID, servicioID int, direccion, descripcion string) (*domain.Ticket, error) {
 	now := time.Now()
 	t := &domain.Ticket{
@@ -103,7 +102,7 @@ func (u *ticketUsecase) GetAvailableTickets(ctx context.Context, operarioID uuid
 }
 
 // AssignTicket valida que el ticket exista y que el operario posea la especialidad requerida,
-// y delega al repositorio la asignación segura con control de concurrencia.
+// y delega al repositorio la asignación segura con auditoría.
 func (u *ticketUsecase) AssignTicket(ctx context.Context, ticketID, operarioID uuid.UUID) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
@@ -139,7 +138,21 @@ func (u *ticketUsecase) GetTicket(ctx context.Context, ticketID, userID uuid.UUI
 	return ticket, nil
 }
 
-// UpdateTicketState valida la máquina de estados y actualiza el estado del ticket.
+// GetTicketHistory verifica que el ticket exista y devuelve su línea de tiempo de estados (exclusivo ADMIN).
+func (u *ticketUsecase) GetTicketHistory(ctx context.Context, ticketID uuid.UUID) ([]domain.TicketHistoryEntry, error) {
+	if _, err := u.repo.FindByID(ctx, ticketID); err != nil {
+		return nil, err
+	}
+
+	entries, err := u.repo.GetHistoryByTicketID(ctx, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo historial del ticket: %w", err)
+	}
+
+	return entries, nil
+}
+
+// UpdateTicketState valida la máquina de estados y actualiza el estado del ticket con auditoría.
 func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID uuid.UUID, rol string, newState domain.TicketState) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
@@ -172,7 +185,7 @@ func (u *ticketUsecase) UpdateTicketState(ctx context.Context, ticketID, userID 
 		return fmt.Errorf("%w: no se permite transición de %s a %s", domain.ErrInvalidStateTransition, ticket.Estado, newState)
 	}
 
-	return u.repo.UpdateState(ctx, ticketID, newState)
+	return u.repo.UpdateState(ctx, ticketID, ticket.Estado, newState, userID, "")
 }
 
 // GenerateEvidenceUploadURL genera una Presigned PUT URL con clave única para subir la foto de evidencia a S3.
@@ -213,7 +226,7 @@ func (u *ticketUsecase) GenerateEvidenceUploadURL(ctx context.Context, ticketID,
 	return uploadURL, publicURL, nil
 }
 
-// FinishTicket registra el precio final, el método de pago y la evidencia pasando el ticket a FINALIZADO.
+// FinishTicket registra el precio final, el método de pago y la evidencia pasando el ticket a FINALIZADO con auditoría.
 func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID, userID uuid.UUID, precioFinal float64, metodoPago domain.MetodoPago, evidenciaURL string) error {
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
@@ -235,16 +248,20 @@ func (u *ticketUsecase) FinishTicket(ctx context.Context, ticketID, userID uuid.
 		return fmt.Errorf("%w: método de pago inválido: %s", domain.ErrInvalidStateTransition, metodoPago)
 	}
 
-	if err := u.repo.Finish(ctx, ticketID, precioFinal, metodoPago, evidenciaURL); err != nil {
+	if err := u.repo.Finish(ctx, ticketID, userID, precioFinal, metodoPago, evidenciaURL); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// CancelTicket cancela un ticket que aún no fue finalizado. Puede hacerlo el cliente dueño,
-// el operario asignado o un ADMIN.
-func (u *ticketUsecase) CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol string) error {
+// CancelTicket cancela un ticket que aún no fue finalizado registrando el motivo opcional en ticket_history.
+func (u *ticketUsecase) CancelTicket(ctx context.Context, ticketID, userID uuid.UUID, rol, motivo string) error {
+	cleanMotivo := strings.TrimSpace(motivo)
+	if utf8.RuneCountInString(cleanMotivo) > 500 {
+		return domain.ErrInvalidCancelReason
+	}
+
 	ticket, err := u.repo.FindByID(ctx, ticketID)
 	if err != nil {
 		return err
@@ -258,7 +275,7 @@ func (u *ticketUsecase) CancelTicket(ctx context.Context, ticketID, userID uuid.
 		return fmt.Errorf("%w: no se puede cancelar un ticket en estado %s", domain.ErrInvalidStateTransition, ticket.Estado)
 	}
 
-	return u.repo.UpdateState(ctx, ticketID, domain.StateCancelado)
+	return u.repo.UpdateState(ctx, ticketID, ticket.Estado, domain.StateCancelado, userID, cleanMotivo)
 }
 
 // RateTicket valida la puntuación (1..5), el comentario (<= 500 chars), la propiedad del cliente,

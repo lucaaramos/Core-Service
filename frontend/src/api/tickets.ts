@@ -1,5 +1,6 @@
 import { apiFetch } from './client'
 import type {
+  CancelTicketRequest,
   CreateReviewRequest,
   CreateTicketRequest,
   EvidenceUploadUrlRequest,
@@ -10,6 +11,7 @@ import type {
   OperarioRating,
   Ticket,
   TicketDisponible,
+  TicketHistoryEntry,
   TicketReview,
   TicketStatus,
   UpdateTicketStateRequest,
@@ -29,6 +31,15 @@ export function getAvailableTickets(): Promise<TicketDisponible[]> {
 /** GET /tickets/:id */
 export function getTicketById(id: string): Promise<Ticket> {
   return apiFetch<Ticket>(`/tickets/${encodeURIComponent(id)}`)
+}
+
+/** GET /tickets/:id/historial (ADMIN) */
+export function getTicketHistory(
+  ticketId: string,
+): Promise<TicketHistoryEntry[]> {
+  return apiFetch<TicketHistoryEntry[]>(
+    `/tickets/${encodeURIComponent(ticketId)}/historial`,
+  )
 }
 
 /** POST /tickets */
@@ -111,11 +122,20 @@ export function finishTicket(
 }
 
 /** PATCH /tickets/:id/cancelar */
-export function cancelTicket(id: string): Promise<MessageResponse> {
+export function cancelTicket(
+  id: string,
+  motivo?: string,
+): Promise<MessageResponse> {
+  const trimmed = motivo?.trim()
+  const payload: CancelTicketRequest | undefined = trimmed
+    ? { motivo: trimmed }
+    : undefined
+
   return apiFetch<MessageResponse>(
     `/tickets/${encodeURIComponent(id)}/cancelar`,
     {
       method: 'PATCH',
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
     },
   )
 }

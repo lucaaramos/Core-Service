@@ -148,6 +148,7 @@ export function OperarioDashboardPage() {
 
   // Modal de confirmación de cancelación
   const [ticketToCancel, setTicketToCancel] = useState<Ticket | null>(null)
+  const [cancelMotivoInput, setCancelMotivoInput] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
 
@@ -655,6 +656,7 @@ export function OperarioDashboardPage() {
   }
 
   function openCancelConfirm(ticket: Ticket) {
+    setCancelMotivoInput('')
     setCancelError(null)
     setTicketToCancel(ticket)
   }
@@ -662,6 +664,7 @@ export function OperarioDashboardPage() {
   function closeCancelConfirm() {
     if (cancelling) return
     setTicketToCancel(null)
+    setCancelMotivoInput('')
     setCancelError(null)
   }
 
@@ -674,8 +677,9 @@ export function OperarioDashboardPage() {
     setFeedbackMessage(null)
 
     try {
-      const res = await cancelTicket(targetId)
+      const res = await cancelTicket(targetId, cancelMotivoInput)
       setTicketToCancel(null)
+      setCancelMotivoInput('')
       setFeedbackMessage(res.message || 'Ticket cancelado exitosamente.')
       await loadMyTickets(statusFilter)
       if (detailTicketId === targetId) {
@@ -1880,6 +1884,34 @@ export function OperarioDashboardPage() {
                 {cancelError}
               </p>
             )}
+
+            <div className="mt-4">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label
+                  htmlFor="operario-cancel-motivo"
+                  className="text-xs font-medium text-slate-300"
+                >
+                  Motivo de cancelación{' '}
+                  <span className="font-normal text-slate-500">(opcional)</span>
+                </label>
+                <span className="text-xs text-slate-500">
+                  {cancelMotivoInput.length}/500
+                </span>
+              </div>
+              <textarea
+                id="operario-cancel-motivo"
+                rows={2}
+                maxLength={500}
+                disabled={cancelling}
+                value={cancelMotivoInput}
+                onChange={(event) => {
+                  setCancelMotivoInput(event.target.value)
+                  setCancelError(null)
+                }}
+                placeholder="Ej. No es posible acceder al domicilio…"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/30 disabled:opacity-60"
+              />
+            </div>
 
             <div className="mt-6 flex items-center justify-end gap-2.5">
               <button

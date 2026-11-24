@@ -124,6 +124,22 @@ export interface UpdateTicketStateRequest {
   nuevo_estado: OperarioNextState
 }
 
+export interface CancelTicketRequest {
+  motivo?: string
+}
+
+export interface TicketHistoryEntry {
+  id: string
+  ticket_id: string
+  estado_anterior: TicketStatus | null
+  estado_nuevo: TicketStatus
+  usuario_id: string
+  usuario_nombre: string
+  usuario_rol: Role
+  motivo: string
+  created_at: string
+}
+
 export interface FinishTicketRequest {
   precio_final: number
   metodo_pago: MetodoPago

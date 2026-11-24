@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Core - Plataforma de Oficios (MVP)
-  version: 1.7.0
+  version: 1.8.0
   description: |
     Contratos REST para la gestión de tickets, operarios y autenticación del MVP.
 
@@ -1108,12 +1108,16 @@ paths:
     patch:
       summary: Cancelar un Ticket
       description: |
-        Cancela un ticket que todavía no fue finalizado y lo pasa a estado **CANCELADO**.
+        Cancela un ticket que todavía no fue finalizado, lo pasa a estado **CANCELADO**
+        y registra atómicamente la transición y el `motivo` opcional en `ticket_history`.
 
         Puede cancelarlo:
         - el **CLIENTE** dueño del ticket,
         - el **OPERARIO** asignado,
         - un **ADMIN**.
+
+        Acepta un body JSON opcional `{ "motivo": "..." }` (máx. 500 caracteres), manteniendo
+        compatibilidad cuando el body se envía vacío.
 
         No se puede cancelar un ticket en estado `FINALIZADO` o `CANCELADO`
         (responde `400 Bad Request`). Si el usuario no participa del ticket,
@@ -1121,6 +1125,7 @@ paths:
       tags:
         - Tickets (Cliente)
         - Tickets (Operario)
+        - Tickets (Operario / Admin)
       security:
         - bearerAuth: []
       parameters:
@@ -1131,6 +1136,12 @@ paths:
             type: string
             format: uuid
           description: UUID del ticket
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCancelarRequest'
       responses:
         '200':
           description: Ticket cancelado exitosamente
@@ -1139,7 +1150,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/MessageResponse'
         '400':
-          description: El ticket ya está FINALIZADO o CANCELADO, o el UUID es inválido
+          description: El ticket ya está FINALIZADO o CANCELADO, motivo > 500 caracteres o UUID inválido
           content:
             application/json:
               schema:
@@ -1152,6 +1163,68 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: El usuario no es el cliente dueño, el operario asignado ni ADMIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ticket no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/tickets/{id}/historial:
+    get:
+      summary: Obtener Historial de Estados de un Ticket (Admin)
+      description: |
+        Devuelve la línea de tiempo cronológica (`created_at ASC`) de todas las transiciones
+        de estado registradas en `ticket_history` para el ticket indicado, enriquecidas con
+        el nombre y rol del usuario que ejecutó cada acción.
+
+        Requiere exclusivamente rol **ADMIN**. Si el ticket fue creado antes de activar la
+        auditoría, devuelve `[]` (`200 OK`).
+      tags:
+        - Tickets (Operario / Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID del ticket
+      responses:
+        '200':
+          description: Lista cronológica de eventos de auditoría del ticket
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketHistoryEntry'
+        '400':
+          description: UUID de ticket con formato inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Token ausente, inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: El usuario autenticado no tiene rol ADMIN
           content:
             application/json:
               schema:
@@ -1569,6 +1642,56 @@ components:
           enum: [EN_CAMINO, EN_PROGRESO]
           description: FINALIZADO se gestiona únicamente vía /finalizar; CANCELADO vía /cancelar.
           example: "EN_CAMINO"
+
+    TicketCancelarRequest:
+      type: object
+      properties:
+        motivo:
+          type: string
+          maxLength: 500
+          description: Motivo opcional de la cancelación registrado en ticket_history.
+          example: "El cliente reprogramó el servicio para la próxima semana."
+
+    TicketHistoryEntry:
+      type: object
+      description: Evento de transición en el historial de auditoría de un ticket.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "b2d4f6a8-1234-4c5d-8e9f-0a1b2c3d4e5f"
+        ticket_id:
+          type: string
+          format: uuid
+          example: "3384504f-76f0-4890-ae4e-c0460d89a178"
+        estado_anterior:
+          type: string
+          nullable: true
+          enum: [CREADO, ASIGNADO, EN_CAMINO, EN_PROGRESO, FINALIZADO, CANCELADO]
+          description: Nulo en el evento inicial de creación del ticket.
+          example: "CREADO"
+        estado_nuevo:
+          type: string
+          enum: [CREADO, ASIGNADO, EN_CAMINO, EN_PROGRESO, FINALIZADO, CANCELADO]
+          example: "ASIGNADO"
+        usuario_id:
+          type: string
+          format: uuid
+          example: "f9f6a086-06eb-4f2a-a82c-21a9a52eb8ef"
+        usuario_nombre:
+          type: string
+          example: "Carlos Gómez"
+        usuario_rol:
+          type: string
+          enum: [CLIENTE, OPERARIO, ADMIN]
+          example: "OPERARIO"
+        motivo:
+          type: string
+          example: ""
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-24T19:35:00Z"
 
     TicketEvidenciaUploadUrlRequest:
       type: object
