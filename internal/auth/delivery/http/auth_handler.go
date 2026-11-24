@@ -12,13 +12,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// AuthHandler expone los endpoints públicos de autenticación y las rutas protegidas de perfil (/users/me).
+// AuthHandler expone los endpoints públicos de autenticación, perfil (/users/me) y gestión admin de operarios.
 type AuthHandler struct {
 	uc        usecase.AuthUsecase
 	jwtSecret string
 }
 
-// NewAuthHandler registra las rutas públicas (/auth/*) y las rutas protegidas de perfil (/users/me*).
+// NewAuthHandler registra las rutas de autenticación, perfil y administración de operarios.
 func NewAuthHandler(router fiber.Router, uc usecase.AuthUsecase, jwtSecret string) {
 	h := &AuthHandler{
 		uc:        uc,
@@ -40,6 +40,13 @@ func NewAuthHandler(router fiber.Router, uc usecase.AuthUsecase, jwtSecret strin
 	users.Get("/me", h.GetMe)
 	users.Patch("/me", h.UpdateMe)
 	users.Patch("/me/password", h.ChangePassword)
+
+	adminOperarios := router.Group("/admin/operarios",
+		middleware.JWTProtected(jwtSecret),
+		middleware.RequireRole(string(domain.RoleAdmin)),
+	)
+	adminOperarios.Get("", h.ListAdminOperarios)
+	adminOperarios.Patch("/:id/aprobacion", h.UpdateOperarioApproval)
 }
 
 type registerRequest struct {
@@ -65,27 +72,53 @@ type changePasswordRequest struct {
 	PasswordNueva  string `json:"password_nueva"`
 }
 
+type updateOperarioApprovalRequest struct {
+	EstadoAprobacion string `json:"estado_aprobacion"`
+}
+
 type userProfileResponse struct {
-	ID        uuid.UUID       `json:"id"`
-	Nombre    string          `json:"nombre"`
-	Email     string          `json:"email"`
-	Telefono  string          `json:"telefono"`
-	Rol       domain.UserRole `json:"rol"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID               uuid.UUID             `json:"id"`
+	Nombre           string                `json:"nombre"`
+	Email            string                `json:"email"`
+	Telefono         string                `json:"telefono"`
+	Rol              domain.UserRole       `json:"rol"`
+	EstadoAprobacion domain.ApprovalStatus `json:"estado_aprobacion"`
+	CreatedAt        time.Time             `json:"created_at"`
+}
+
+type operarioAdminResponse struct {
+	ID               uuid.UUID             `json:"id"`
+	Nombre           string                `json:"nombre"`
+	Email            string                `json:"email"`
+	Telefono         string                `json:"telefono"`
+	EstadoAprobacion domain.ApprovalStatus `json:"estado_aprobacion"`
+	CreatedAt        time.Time             `json:"created_at"`
 }
 
 func toUserProfileResponse(u *domain.User) userProfileResponse {
 	return userProfileResponse{
-		ID:        u.ID,
-		Nombre:    u.Nombre,
-		Email:     u.Email,
-		Telefono:  u.Telefono,
-		Rol:       u.Rol,
-		CreatedAt: u.CreatedAt,
+		ID:               u.ID,
+		Nombre:           u.Nombre,
+		Email:            u.Email,
+		Telefono:         u.Telefono,
+		Rol:              u.Rol,
+		EstadoAprobacion: u.EstadoAprobacion,
+		CreatedAt:        u.CreatedAt,
 	}
 }
 
-// Register crea un usuario CLIENTE u OPERARIO.
+func toOperarioAdminResponse(u *domain.User) operarioAdminResponse {
+	return operarioAdminResponse{
+		ID:               u.ID,
+		Nombre:           u.Nombre,
+		Email:            u.Email,
+		Telefono:         u.Telefono,
+		EstadoAprobacion: u.EstadoAprobacion,
+		CreatedAt:        u.CreatedAt,
+	}
+}
+
+// Register crea un usuario CLIENTE ('APROBADO') u OPERARIO ('PENDIENTE').
 func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	var req registerRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -98,10 +131,11 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"id":     user.ID,
-		"nombre": user.Nombre,
-		"email":  user.Email,
-		"rol":    user.Rol,
+		"id":                user.ID,
+		"nombre":            user.Nombre,
+		"email":             user.Email,
+		"rol":               user.Rol,
+		"estado_aprobacion": user.EstadoAprobacion,
 	})
 }
 
@@ -174,6 +208,46 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "contraseña actualizada correctamente"})
 }
 
+// ListAdminOperarios devuelve el listado de operarios (filtrable por ?estado=PENDIENTE|APROBADO|RECHAZADO).
+func (h *AuthHandler) ListAdminOperarios(c *fiber.Ctx) error {
+	var estado *string
+	if q := c.Query("estado"); q != "" {
+		estado = &q
+	}
+
+	operarios, err := h.uc.ListOperarios(c.UserContext(), estado)
+	if err != nil {
+		return handleAuthError(c, err)
+	}
+
+	resp := make([]operarioAdminResponse, 0, len(operarios))
+	for i := range operarios {
+		resp = append(resp, toOperarioAdminResponse(&operarios[i]))
+	}
+
+	return c.Status(fiber.StatusOK).JSON(resp)
+}
+
+// UpdateOperarioApproval aprueba o rechaza la cuenta de un operario por su UUID (exclusivo ADMIN).
+func (h *AuthHandler) UpdateOperarioApproval(c *fiber.Ctx) error {
+	operarioUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de operario con formato UUID inválido"})
+	}
+
+	var req updateOperarioApprovalRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
+	}
+
+	updated, err := h.uc.UpdateOperarioApproval(c.UserContext(), operarioUUID, domain.ApprovalStatus(req.EstadoAprobacion))
+	if err != nil {
+		return handleAuthError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(toOperarioAdminResponse(updated))
+}
+
 func handleAuthError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials),
@@ -186,7 +260,9 @@ func handleAuthError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, domain.ErrInvalidRole),
 		errors.Is(err, domain.ErrInvalidInput),
 		errors.Is(err, domain.ErrEmptyName),
-		errors.Is(err, domain.ErrWeakPassword):
+		errors.Is(err, domain.ErrWeakPassword),
+		errors.Is(err, domain.ErrInvalidApprovalStatus),
+		errors.Is(err, domain.ErrTargetNotOperario):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})

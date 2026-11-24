@@ -35,6 +35,8 @@ var (
 	ErrInvalidStateTransition   = errors.New("transición de estado inválida")
 	ErrInvalidTicketState       = errors.New("estado de ticket inválido")
 	ErrTicketAccessDenied       = errors.New("no tenés permiso para acceder a este ticket")
+	ErrOperarioPendingApproval  = errors.New("tu cuenta de operario aún no fue aprobada por un administrador")
+	ErrOperarioRejected         = errors.New("tu solicitud de operario fue rechazada por un administrador")
 	ErrOperarioMissingSpecialty = errors.New("no tenés registrada la especialidad requerida para aceptar este trabajo")
 	ErrInvalidEvidenceType      = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
 	ErrReviewAlreadyExists      = errors.New("este ticket ya fue calificado")
@@ -132,6 +134,9 @@ type Repository interface {
 
 	// HasOperarioSpecialty indica si el operario tiene registrada la especialidad servicioID.
 	HasOperarioSpecialty(ctx context.Context, operarioID uuid.UUID, servicioID int) (bool, error)
+
+	// GetOperarioApprovalStatus devuelve el estado_aprobacion actual del operario en users.
+	GetOperarioApprovalStatus(ctx context.Context, operarioID uuid.UUID) (string, error)
 
 	// FindByID busca un ticket por su identificador único UUID.
 	FindByID(ctx context.Context, id uuid.UUID) (*Ticket, error)
