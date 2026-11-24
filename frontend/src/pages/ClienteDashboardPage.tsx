@@ -6,14 +6,17 @@ import {
   useState,
   type FormEvent,
 } from 'react'
+import { ApiError } from '../api/client'
 import { getServices } from '../api/services'
 import {
   cancelTicket,
   createTicket,
   getTicketById,
   getTickets,
+  rateTicket,
 } from '../api/tickets'
 import { Navbar } from '../components/Navbar'
+import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type { MetodoPago, Service, Ticket, TicketStatus } from '../types/api'
 
@@ -33,6 +36,14 @@ const METODO_PAGO_LABELS: Record<MetodoPago, string> = {
   EFECTIVO: 'Efectivo',
   QR: 'QR',
   TRANSFERENCIA: 'Transferencia',
+}
+
+const RATING_LABELS: Record<number, string> = {
+  1: 'Muy malo',
+  2: 'Regular',
+  3: 'Bueno',
+  4: 'Muy bueno',
+  5: 'Excelente',
 }
 
 const currencyFormatter = new Intl.NumberFormat('es-AR', {
@@ -90,7 +101,7 @@ export function ClienteDashboardPage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null)
 
-  // Feedback global de acciones sobre la lista (ej. cancelación)
+  // Feedback global de acciones sobre la lista (cancelación / calificación)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
 
   // Modal de detalle de ticket
@@ -104,6 +115,14 @@ export function ClienteDashboardPage() {
   const [ticketToCancel, setTicketToCancel] = useState<Ticket | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+
+  // Modal de calificación (1..5 estrellas + comentario opcional)
+  const [ticketToRate, setTicketToRate] = useState<Ticket | null>(null)
+  const [puntuacionInput, setPuntuacionInput] = useState(5)
+  const [hoverRating, setHoverRating] = useState<number | null>(null)
+  const [comentarioInput, setComentarioInput] = useState('')
+  const [savingRating, setSavingRating] = useState(false)
+  const [ratingError, setRatingError] = useState<string | null>(null)
 
   const servicesMap = useMemo(() => {
     const map = new Map<number, Service>()
@@ -246,11 +265,14 @@ export function ClienteDashboardPage() {
 
   // Cerrar modales con la tecla Escape
   useEffect(() => {
-    if (!detailTicketId && !ticketToCancel) return
+    if (!detailTicketId && !ticketToCancel && !ticketToRate) return
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== 'Escape') return
-      if (ticketToCancel && !cancelling) {
+      if (ticketToRate && !savingRating) {
+        setTicketToRate(null)
+        setRatingError(null)
+      } else if (ticketToCancel && !cancelling) {
         setTicketToCancel(null)
         setCancelError(null)
       } else if (detailTicketId) {
@@ -263,7 +285,13 @@ export function ClienteDashboardPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [detailTicketId, ticketToCancel, cancelling])
+  }, [
+    detailTicketId,
+    ticketToCancel,
+    cancelling,
+    ticketToRate,
+    savingRating,
+  ])
 
   function closeDetailModal() {
     detailReqIdRef.current += 1
@@ -281,6 +309,68 @@ export function ClienteDashboardPage() {
     if (cancelling) return
     setTicketToCancel(null)
     setCancelError(null)
+  }
+
+  function openRateModal(ticket: Ticket) {
+    setPuntuacionInput(5)
+    setHoverRating(null)
+    setComentarioInput('')
+    setRatingError(null)
+    setTicketToRate(ticket)
+  }
+
+  function closeRateModal() {
+    if (savingRating) return
+    setTicketToRate(null)
+    setRatingError(null)
+  }
+
+  async function handleRateSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!ticketToRate) return
+
+    if (puntuacionInput < 1 || puntuacionInput > 5) {
+      setRatingError('Seleccioná una puntuación entre 1 y 5 estrellas.')
+      return
+    }
+
+    const trimmedComentario = comentarioInput.trim()
+    if (trimmedComentario.length > 500) {
+      setRatingError('El comentario no puede superar los 500 caracteres.')
+      return
+    }
+
+    const targetTicketId = ticketToRate.id
+    setSavingRating(true)
+    setRatingError(null)
+    setActionMessage(null)
+
+    try {
+      await rateTicket(targetTicketId, {
+        puntuacion: puntuacionInput,
+        ...(trimmedComentario ? { comentario: trimmedComentario } : {}),
+      })
+      setTicketToRate(null)
+      setActionMessage('¡Gracias por calificar el servicio!')
+      await loadTickets(statusFilter)
+      if (detailTicketId === targetTicketId) {
+        await loadTicketDetail(targetTicketId)
+      }
+    } catch (err) {
+      setRatingError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo enviar tu calificación',
+      )
+      if (err instanceof ApiError && err.status === 409) {
+        await loadTickets(statusFilter)
+        if (detailTicketId === targetTicketId) {
+          await loadTicketDetail(targetTicketId)
+        }
+      }
+    } finally {
+      setSavingRating(false)
+    }
   }
 
   async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
@@ -356,14 +446,14 @@ export function ClienteDashboardPage() {
       }
     } catch (err) {
       setCancelError(
-        err instanceof Error
-          ? err.message
-          : 'No se pudo cancelar el ticket',
+        err instanceof Error ? err.message : 'No se pudo cancelar el ticket',
       )
     } finally {
       setCancelling(false)
     }
   }
+
+  const activeStarValue = hoverRating ?? puntuacionInput
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -375,8 +465,8 @@ export function ClienteDashboardPage() {
             Panel de Cliente
           </h1>
           <p className="mt-1.5 text-sm text-slate-400">
-            Solicitá servicios de oficios y seguí el estado de tus tickets en
-            tiempo real.
+            Solicitá servicios de oficios, seguí el avance de tus tickets y
+            calificá los trabajos finalizados.
           </p>
         </div>
 
@@ -444,7 +534,9 @@ export function ClienteDashboardPage() {
                   <select
                     id="servicio"
                     required
-                    disabled={servicesLoading || services.length === 0 || submitting}
+                    disabled={
+                      servicesLoading || services.length === 0 || submitting
+                    }
                     value={servicioId}
                     onChange={(event) => setServicioId(event.target.value)}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
@@ -511,7 +603,9 @@ export function ClienteDashboardPage() {
 
                 <button
                   type="submit"
-                  disabled={submitting || servicesLoading || services.length === 0}
+                  disabled={
+                    submitting || servicesLoading || services.length === 0
+                  }
                   className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting && (
@@ -642,6 +736,8 @@ export function ClienteDashboardPage() {
                 {tickets.map((ticket) => {
                   const service = servicesMap.get(ticket.servicio_id)
                   const canCancel = isCancellable(ticket.estado)
+                  const canRate =
+                    ticket.estado === 'FINALIZADO' && !ticket.resena
 
                   return (
                     <li
@@ -667,7 +763,15 @@ export function ClienteDashboardPage() {
                           </p>
                         </div>
 
-                        <StatusBadge status={ticket.estado} />
+                        <div className="flex flex-wrap items-center gap-2">
+                          {ticket.resena && (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
+                              <StarRating value={ticket.resena.puntuacion} />
+                              <span>{ticket.resena.puntuacion}/5</span>
+                            </span>
+                          )}
+                          <StatusBadge status={ticket.estado} />
+                        </div>
                       </div>
 
                       <p className="mt-3 line-clamp-2 text-sm text-slate-400">
@@ -680,6 +784,16 @@ export function ClienteDashboardPage() {
                         </span>
 
                         <div className="flex flex-wrap items-center gap-2">
+                          {canRate && (
+                            <button
+                              type="button"
+                              onClick={() => openRateModal(ticket)}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+                            >
+                              <span aria-hidden>★</span>
+                              <span>Calificar servicio</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => void loadTicketDetail(ticket.id)}
@@ -706,6 +820,153 @@ export function ClienteDashboardPage() {
           </section>
         </div>
       </main>
+
+      {/* Modal de Calificación */}
+      {ticketToRate && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rate-dialog-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={closeRateModal}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/60"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3
+                  id="rate-dialog-title"
+                  className="text-lg font-semibold text-white"
+                >
+                  Calificar servicio
+                </h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  {servicesMap.get(ticketToRate.servicio_id)?.nombre ??
+                    `Servicio #${ticketToRate.servicio_id}`}{' '}
+                  — {ticketToRate.direccion}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingRating}
+                onClick={closeRateModal}
+                aria-label="Cerrar calificación"
+                className="rounded-lg border border-slate-800 px-2.5 py-1 text-sm text-slate-400 transition hover:border-slate-700 hover:text-white disabled:opacity-60"
+              >
+                ✕
+              </button>
+            </div>
+
+            {ratingError && (
+              <p
+                role="alert"
+                className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300"
+              >
+                {ratingError}
+              </p>
+            )}
+
+            <form onSubmit={handleRateSubmit} className="mt-5 space-y-5">
+              <div>
+                <span className="block text-sm font-medium text-slate-300">
+                  ¿Cómo fue tu experiencia con el trabajo realizado?
+                </span>
+                <div
+                  role="radiogroup"
+                  aria-label="Puntuación de 1 a 5 estrellas"
+                  className="mt-2.5 flex items-center gap-2"
+                  onMouseLeave={() => setHoverRating(null)}
+                >
+                  {[1, 2, 3, 4, 5].map((star) => {
+                    const filled = star <= activeStarValue
+                    return (
+                      <button
+                        key={star}
+                        type="button"
+                        role="radio"
+                        aria-checked={puntuacionInput === star}
+                        aria-label={`${star} ${star === 1 ? 'estrella' : 'estrellas'}`}
+                        disabled={savingRating}
+                        onMouseEnter={() => setHoverRating(star)}
+                        onClick={() => {
+                          setPuntuacionInput(star)
+                          setRatingError(null)
+                        }}
+                        className={`rounded-xl border px-3 py-2 text-2xl leading-none transition focus:outline-none focus:ring-2 focus:ring-amber-500/40 disabled:opacity-60 ${
+                          filled
+                            ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                            : 'border-slate-800 bg-slate-950 text-slate-600 hover:border-slate-700'
+                        }`}
+                      >
+                        ★
+                      </button>
+                    )
+                  })}
+                  <span className="ml-2 text-xs font-semibold text-amber-300">
+                    {RATING_LABELS[activeStarValue]} ({activeStarValue}/5)
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="rate-comentario"
+                    className="text-sm font-medium text-slate-300"
+                  >
+                    Comentario{' '}
+                    <span className="font-normal text-slate-500">
+                      (opcional)
+                    </span>
+                  </label>
+                  <span className="text-xs text-slate-500">
+                    {comentarioInput.length}/500
+                  </span>
+                </div>
+                <textarea
+                  id="rate-comentario"
+                  rows={3}
+                  maxLength={500}
+                  disabled={savingRating}
+                  value={comentarioInput}
+                  onChange={(event) => {
+                    setComentarioInput(event.target.value)
+                    setRatingError(null)
+                  }}
+                  placeholder="Contanos qué te pareció la atención, puntualidad o calidad del trabajo…"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 border-t border-slate-800 pt-4">
+                <button
+                  type="button"
+                  disabled={savingRating}
+                  onClick={closeRateModal}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingRating}
+                  className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingRating && (
+                    <span
+                      aria-hidden
+                      className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/40 border-t-slate-950"
+                    />
+                  )}
+                  {savingRating ? 'Enviando…' : 'Enviar calificación'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Detalle del Ticket */}
       {detailTicketId && (
@@ -905,7 +1166,50 @@ export function ClienteDashboardPage() {
                   </div>
                 )}
 
+                {/* Calificación emitida por el cliente */}
+                {detailTicket.resena && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+                        Tu calificación
+                      </h4>
+                      <span className="text-xs text-slate-400">
+                        {formatDate(detailTicket.resena.created_at)}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <StarRating
+                        value={detailTicket.resena.puntuacion}
+                        size="md"
+                      />
+                      <span className="text-sm font-semibold text-white">
+                        {detailTicket.resena.puntuacion} de 5
+                      </span>
+                    </div>
+                    {detailTicket.resena.comentario ? (
+                      <p className="mt-2.5 whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-200">
+                        {detailTicket.resena.comentario}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-xs italic text-slate-500">
+                        Sin comentario adicional.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
+                  {detailTicket.estado === 'FINALIZADO' &&
+                    !detailTicket.resena && (
+                      <button
+                        type="button"
+                        onClick={() => openRateModal(detailTicket)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+                      >
+                        <span aria-hidden>★</span>
+                        <span>Calificar servicio</span>
+                      </button>
+                    )}
                   {isCancellable(detailTicket.estado) && (
                     <button
                       type="button"

@@ -1,13 +1,16 @@
 import { apiFetch } from './client'
 import type {
+  CreateReviewRequest,
   CreateTicketRequest,
   EvidenceUploadUrlRequest,
   EvidenceUploadUrlResponse,
   FinishTicketRequest,
   MessageResponse,
   OperarioNextState,
+  OperarioRating,
   Ticket,
   TicketDisponible,
+  TicketReview,
   TicketStatus,
   UpdateTicketStateRequest,
 } from '../types/api'
@@ -38,9 +41,12 @@ export function createTicket(data: CreateTicketRequest): Promise<Ticket> {
 
 /** PATCH /tickets/:id/asignar */
 export function assignTicket(id: string): Promise<MessageResponse> {
-  return apiFetch<MessageResponse>(`/tickets/${encodeURIComponent(id)}/asignar`, {
-    method: 'PATCH',
-  })
+  return apiFetch<MessageResponse>(
+    `/tickets/${encodeURIComponent(id)}/asignar`,
+    {
+      method: 'PATCH',
+    },
+  )
 }
 
 /** PATCH /tickets/:id/estado */
@@ -70,7 +76,7 @@ export function requestEvidenceUploadUrl(
   )
 }
 
-/** Sube un archivo directamente a la Presigned PUT URL de MinIO/S3 (sin Authorization). */
+/** Sube un archivo directamente a la Presigned PUT URL de S3 (sin Authorization). */
 export async function uploadFileToPresignedUrl(
   uploadUrl: string,
   file: File,
@@ -95,15 +101,40 @@ export function finishTicket(
   id: string,
   data: FinishTicketRequest,
 ): Promise<MessageResponse> {
-  return apiFetch<MessageResponse>(`/tickets/${encodeURIComponent(id)}/finalizar`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
+  return apiFetch<MessageResponse>(
+    `/tickets/${encodeURIComponent(id)}/finalizar`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    },
+  )
 }
 
 /** PATCH /tickets/:id/cancelar */
 export function cancelTicket(id: string): Promise<MessageResponse> {
-  return apiFetch<MessageResponse>(`/tickets/${encodeURIComponent(id)}/cancelar`, {
-    method: 'PATCH',
-  })
+  return apiFetch<MessageResponse>(
+    `/tickets/${encodeURIComponent(id)}/cancelar`,
+    {
+      method: 'PATCH',
+    },
+  )
+}
+
+/** POST /tickets/:id/calificar (CLIENTE) */
+export function rateTicket(
+  ticketId: string,
+  data: CreateReviewRequest,
+): Promise<TicketReview> {
+  return apiFetch<TicketReview>(
+    `/tickets/${encodeURIComponent(ticketId)}/calificar`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    },
+  )
+}
+
+/** GET /operarios/me/rating (OPERARIO) */
+export function getMyRating(): Promise<OperarioRating> {
+  return apiFetch<OperarioRating>('/operarios/me/rating')
 }
