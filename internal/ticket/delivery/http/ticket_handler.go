@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"errors"
 
 	"core-service/internal/ticket/domain"
@@ -10,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TicketHandler maneja las peticiones HTTP REST para los tickets y calificaciones utilizando Fiber.
+// TicketHandler maneja las peticiones HTTP REST para los tickets, auditoría y calificaciones utilizando Fiber.
 type TicketHandler struct {
 	uc usecase.TicketUsecase
 }
@@ -29,6 +30,10 @@ type createTicketRequest struct {
 
 type updateStateRequest struct {
 	NuevoEstado string `json:"nuevo_estado"`
+}
+
+type cancelTicketRequest struct {
+	Motivo string `json:"motivo"`
 }
 
 type finishTicketRequest struct {
@@ -106,6 +111,21 @@ func (h *TicketHandler) GetTicket(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(ticket)
+}
+
+// GetTicketHistory devuelve la línea de tiempo de auditoría de estados de un ticket (exclusivo ADMIN).
+func (h *TicketHandler) GetTicketHistory(c *fiber.Ctx) error {
+	ticketUUID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id de ticket con formato UUID inválido"})
+	}
+
+	entries, err := h.uc.GetTicketHistory(c.UserContext(), ticketUUID)
+	if err != nil {
+		return h.handleError(c, err)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(entries)
 }
 
 // CreateTicket crea una solicitud de servicio usando el cliente_id del JWT.
@@ -229,7 +249,7 @@ func (h *TicketHandler) FinishTicket(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "trabajo finalizado exitosamente"})
 }
 
-// CancelTicket cancela un ticket que aún no fue finalizado.
+// CancelTicket cancela un ticket que aún no fue finalizado (aceptando motivo JSON opcional).
 func (h *TicketHandler) CancelTicket(c *fiber.Ctx) error {
 	ticketUUID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -243,7 +263,14 @@ func (h *TicketHandler) CancelTicket(c *fiber.Ctx) error {
 
 	rol, _ := c.Locals("rol").(string)
 
-	if err := h.uc.CancelTicket(c.UserContext(), ticketUUID, userID, rol); err != nil {
+	var req cancelTicketRequest
+	if len(bytes.TrimSpace(c.Body())) > 0 {
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuerpo de solicitud inválido"})
+		}
+	}
+
+	if err := h.uc.CancelTicket(c.UserContext(), ticketUUID, userID, rol, req.Motivo); err != nil {
 		return h.handleError(c, err)
 	}
 
@@ -304,7 +331,8 @@ func (h *TicketHandler) handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, domain.ErrInvalidStateTransition),
 		errors.Is(err, domain.ErrInvalidTicketState),
 		errors.Is(err, domain.ErrInvalidEvidenceType),
-		errors.Is(err, domain.ErrInvalidReviewInput):
+		errors.Is(err, domain.ErrInvalidReviewInput),
+		errors.Is(err, domain.ErrInvalidCancelReason):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "error interno del servidor"})

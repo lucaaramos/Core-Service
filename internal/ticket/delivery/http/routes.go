@@ -16,6 +16,12 @@ func RegisterRoutes(router fiber.Router, handler *TicketHandler, jwtSecret strin
 		handler.GetAvailableTickets,
 	)
 
+	// GET /tickets/:id/historial -> línea de tiempo de auditoría, exclusivo ADMIN
+	tickets.Get("/:id/historial",
+		middleware.RequireRole(string(authDomain.RoleAdmin)),
+		handler.GetTicketHistory,
+	)
+
 	// GET /tickets/:id -> detalle (cliente dueño, operario asignado o ADMIN)
 	tickets.Get("/:id",
 		middleware.RequireRole(string(authDomain.RoleCliente), string(authDomain.RoleOperario), string(authDomain.RoleAdmin)),

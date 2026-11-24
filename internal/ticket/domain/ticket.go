@@ -39,6 +39,7 @@ var (
 	ErrInvalidEvidenceType      = errors.New("tipo de archivo inválido: solo se permite image/jpeg, image/png o image/webp")
 	ErrReviewAlreadyExists      = errors.New("este ticket ya fue calificado")
 	ErrInvalidReviewInput       = errors.New("datos de calificación inválidos")
+	ErrInvalidCancelReason      = errors.New("el motivo de cancelación no puede superar los 500 caracteres")
 )
 
 // IsValidTicketState indica si el string corresponde a un estado válido de la máquina de estados.
@@ -77,6 +78,19 @@ type OperarioRating struct {
 	Resenas      []TicketReview `json:"resenas"`
 }
 
+// TicketHistoryEntry representa un evento en la línea de tiempo de auditoría de un ticket.
+type TicketHistoryEntry struct {
+	ID             uuid.UUID    `json:"id"`
+	TicketID       uuid.UUID    `json:"ticket_id"`
+	EstadoAnterior *TicketState `json:"estado_anterior"`
+	EstadoNuevo    TicketState  `json:"estado_nuevo"`
+	UsuarioID      uuid.UUID    `json:"usuario_id"`
+	UsuarioNombre  string       `json:"usuario_nombre"`
+	UsuarioRol     string       `json:"usuario_rol"`
+	Motivo         string       `json:"motivo"`
+	CreatedAt      time.Time    `json:"created_at"`
+}
+
 // Ticket representa la entidad de dominio para una solicitud de servicio.
 type Ticket struct {
 	ID                  uuid.UUID     `json:"id"`
@@ -106,16 +120,14 @@ type AvailableTicket struct {
 }
 
 // Repository define el contrato de persistencia para el dominio Ticket.
-// Siguiendo Clean Architecture, el dominio define la interfaz que la infraestructura implementará.
 type Repository interface {
-	// Create persiste un nuevo ticket en la base de datos.
+	// Create persiste un nuevo ticket y su registro inicial en ticket_history de forma atómica.
 	Create(ctx context.Context, t *Ticket) error
 
 	// List devuelve los tickets que cumplen con los filtros indicados, ordenados por created_at DESC.
 	List(ctx context.Context, filter TicketFilter) ([]Ticket, error)
 
-	// GetAvailable devuelve los tickets en estado CREADO y sin operario (bolsa de trabajo)
-	// filtrados por las especialidades registradas del operario.
+	// GetAvailable devuelve los tickets en estado CREADO y sin operario filtrados por especialidades.
 	GetAvailable(ctx context.Context, operarioID uuid.UUID) ([]AvailableTicket, error)
 
 	// HasOperarioSpecialty indica si el operario tiene registrada la especialidad servicioID.
@@ -124,16 +136,17 @@ type Repository interface {
 	// FindByID busca un ticket por su identificador único UUID.
 	FindByID(ctx context.Context, id uuid.UUID) (*Ticket, error)
 
-	// AssignOperario intenta asignar un operario al ticket aplicando bloqueo por concurrencia (Row-level lock).
-	// Retorna error si el ticket ya fue tomado por otro operario o no está en estado CREADO.
+	// AssignOperario asigna atómicamente el operario y registra la transición CREADO -> ASIGNADO.
 	AssignOperario(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID) error
 
-	// UpdateState actualiza el estado actual del ticket en la máquina de estados.
-	UpdateState(ctx context.Context, ticketID uuid.UUID, newState TicketState) error
+	// UpdateState actualiza el estado del ticket condicionado a prevState y registra la auditoría en ticket_history.
+	UpdateState(ctx context.Context, ticketID uuid.UUID, prevState, newState TicketState, usuarioID uuid.UUID, motivo string) error
 
-	// Finish registra precio final, método de pago y evidencia, y pasa el ticket a FINALIZADO
-	// en una sola operación atómica condicionada a que siga en estado EN_PROGRESO.
-	Finish(ctx context.Context, ticketID uuid.UUID, precioFinal float64, metodoPago MetodoPago, evidenciaURL string) error
+	// Finish registra precio final, método de pago y evidencia pasando a FINALIZADO junto con su auditoría.
+	Finish(ctx context.Context, ticketID uuid.UUID, operarioID uuid.UUID, precioFinal float64, metodoPago MetodoPago, evidenciaURL string) error
+
+	// GetHistoryByTicketID devuelve la línea de tiempo cronológica de auditoría de un ticket.
+	GetHistoryByTicketID(ctx context.Context, ticketID uuid.UUID) ([]TicketHistoryEntry, error)
 
 	// CreateReview persiste la reseña de un ticket finalizado (traduce 23505 a ErrReviewAlreadyExists).
 	CreateReview(ctx context.Context, review *TicketReview) (*TicketReview, error)
