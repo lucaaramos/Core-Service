@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"core-service/internal/ticket/domain"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // PostgresTicketRepository implementa domain.Repository utilizando database/sql con PostgreSQL.
@@ -21,7 +23,8 @@ func NewPostgresTicketRepository(db *sql.DB) *PostgresTicketRepository {
 	return &PostgresTicketRepository{db: db}
 }
 
-// ticketModel es una estructura auxiliar para el mapeo seguro desde y hacia sql.Rows.
+// ticketModel es una estructura auxiliar para el mapeo seguro desde y hacia sql.Rows,
+// incluyendo los campos opcionales provenientes del LEFT JOIN con ticket_reviews.
 type ticketModel struct {
 	ID                  uuid.UUID
 	ClienteID           uuid.UUID
@@ -35,6 +38,12 @@ type ticketModel struct {
 	EvidenciaURL        sql.NullString
 	CreatedAt           sql.NullTime
 	UpdatedAt           sql.NullTime
+	ReviewID            sql.NullString
+	ReviewClienteID     sql.NullString
+	ReviewOperarioID    sql.NullString
+	ReviewPuntuacion    sql.NullInt64
+	ReviewComentario    sql.NullString
+	ReviewCreatedAt     sql.NullTime
 }
 
 func (m *ticketModel) toDomain() (*domain.Ticket, error) {
@@ -70,6 +79,31 @@ func (m *ticketModel) toDomain() (*domain.Ticket, error) {
 	if m.EvidenciaURL.Valid {
 		ev := m.EvidenciaURL.String
 		t.EvidenciaURL = &ev
+	}
+
+	if m.ReviewID.Valid {
+		revID, err := uuid.Parse(m.ReviewID.String)
+		if err != nil {
+			return nil, fmt.Errorf("error parseando review id UUID: %w", err)
+		}
+		revClienteID, err := uuid.Parse(m.ReviewClienteID.String)
+		if err != nil {
+			return nil, fmt.Errorf("error parseando review cliente_id UUID: %w", err)
+		}
+		revOperarioID, err := uuid.Parse(m.ReviewOperarioID.String)
+		if err != nil {
+			return nil, fmt.Errorf("error parseando review operario_id UUID: %w", err)
+		}
+
+		t.Resena = &domain.TicketReview{
+			ID:         revID,
+			TicketID:   m.ID,
+			ClienteID:  revClienteID,
+			OperarioID: revOperarioID,
+			Puntuacion: int(m.ReviewPuntuacion.Int64),
+			Comentario: m.ReviewComentario.String,
+			CreatedAt:  m.ReviewCreatedAt.Time,
+		}
 	}
 
 	return t, nil
@@ -126,12 +160,17 @@ func (r *PostgresTicketRepository) Create(ctx context.Context, t *domain.Ticket)
 	return nil
 }
 
-// FindByID busca un ticket por su ID único UUID.
+// FindByID busca un ticket por su ID único UUID junto con su reseña opcional.
 func (r *PostgresTicketRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Ticket, error) {
 	query := `
-		SELECT id, cliente_id, operario_id, servicio_id, estado, direccion, descripcion_problema, precio_final, metodo_pago, evidencia_url, created_at, updated_at
-		FROM tickets
-		WHERE id = $1
+		SELECT
+			t.id, t.cliente_id, t.operario_id, t.servicio_id, t.estado,
+			t.direccion, t.descripcion_problema, t.precio_final, t.metodo_pago,
+			t.evidencia_url, t.created_at, t.updated_at,
+			r.id, r.cliente_id, r.operario_id, r.puntuacion, r.comentario, r.created_at
+		FROM tickets t
+		LEFT JOIN ticket_reviews r ON r.ticket_id = t.id
+		WHERE t.id = $1
 	`
 
 	row := r.db.QueryRowContext(ctx, query, id)
@@ -150,6 +189,12 @@ func (r *PostgresTicketRepository) FindByID(ctx context.Context, id uuid.UUID) (
 		&m.EvidenciaURL,
 		&m.CreatedAt,
 		&m.UpdatedAt,
+		&m.ReviewID,
+		&m.ReviewClienteID,
+		&m.ReviewOperarioID,
+		&m.ReviewPuntuacion,
+		&m.ReviewComentario,
+		&m.ReviewCreatedAt,
 	)
 
 	if err != nil {
@@ -203,32 +248,37 @@ func (r *PostgresTicketRepository) GetAvailable(ctx context.Context, operarioID 
 	return available, nil
 }
 
-// List devuelve los tickets que cumplen con los filtros opcionales indicados,
+// List devuelve los tickets que cumplen con los filtros opcionales indicados (incluyendo reseña si existe),
 // aplicando solo los que están presentes y ordenando por fecha de creación descendente.
 func (r *PostgresTicketRepository) List(ctx context.Context, filter domain.TicketFilter) ([]domain.Ticket, error) {
 	query := `
-		SELECT id, cliente_id, operario_id, servicio_id, estado, direccion, descripcion_problema, precio_final, metodo_pago, evidencia_url, created_at, updated_at
-		FROM tickets
+		SELECT
+			t.id, t.cliente_id, t.operario_id, t.servicio_id, t.estado,
+			t.direccion, t.descripcion_problema, t.precio_final, t.metodo_pago,
+			t.evidencia_url, t.created_at, t.updated_at,
+			r.id, r.cliente_id, r.operario_id, r.puntuacion, r.comentario, r.created_at
+		FROM tickets t
+		LEFT JOIN ticket_reviews r ON r.ticket_id = t.id
 		WHERE 1 = 1
 	`
 	args := make([]interface{}, 0, 3)
 
 	if filter.ClienteID != nil {
 		args = append(args, *filter.ClienteID)
-		query += fmt.Sprintf(" AND cliente_id = $%d", len(args))
+		query += fmt.Sprintf(" AND t.cliente_id = $%d", len(args))
 	}
 
 	if filter.OperarioID != nil {
 		args = append(args, *filter.OperarioID)
-		query += fmt.Sprintf(" AND operario_id = $%d", len(args))
+		query += fmt.Sprintf(" AND t.operario_id = $%d", len(args))
 	}
 
 	if filter.Estado != nil {
 		args = append(args, *filter.Estado)
-		query += fmt.Sprintf(" AND estado = $%d", len(args))
+		query += fmt.Sprintf(" AND t.estado = $%d", len(args))
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY t.created_at DESC"
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -252,6 +302,12 @@ func (r *PostgresTicketRepository) List(ctx context.Context, filter domain.Ticke
 			&m.EvidenciaURL,
 			&m.CreatedAt,
 			&m.UpdatedAt,
+			&m.ReviewID,
+			&m.ReviewClienteID,
+			&m.ReviewOperarioID,
+			&m.ReviewPuntuacion,
+			&m.ReviewComentario,
+			&m.ReviewCreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("error escaneando ticket: %w", err)
 		}
@@ -313,7 +369,6 @@ func (r *PostgresTicketRepository) AssignOperario(ctx context.Context, ticketID 
 	}
 
 	if rowsAffected == 0 {
-		// Validar si el ticket existe, si falta la especialidad o si ya fue tomado por otro operario
 		var servicioID int
 		checkQuery := `SELECT servicio_id FROM tickets WHERE id = $1`
 		if err := r.db.QueryRowContext(ctx, checkQuery, ticketID).Scan(&servicioID); err != nil {
@@ -398,4 +453,94 @@ func (r *PostgresTicketRepository) Finish(ctx context.Context, ticketID uuid.UUI
 	}
 
 	return nil
+}
+
+// CreateReview inserta una nueva reseña sobre un ticket finalizado (traduce 23505 a ErrReviewAlreadyExists).
+func (r *PostgresTicketRepository) CreateReview(ctx context.Context, review *domain.TicketReview) (*domain.TicketReview, error) {
+	query := `
+		INSERT INTO ticket_reviews (id, ticket_id, cliente_id, operario_id, puntuacion, comentario, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, ticket_id, cliente_id, operario_id, puntuacion, comentario, created_at
+	`
+
+	created := &domain.TicketReview{}
+	err := r.db.QueryRowContext(
+		ctx,
+		query,
+		review.ID,
+		review.TicketID,
+		review.ClienteID,
+		review.OperarioID,
+		review.Puntuacion,
+		review.Comentario,
+		review.CreatedAt,
+	).Scan(
+		&created.ID,
+		&created.TicketID,
+		&created.ClienteID,
+		&created.OperarioID,
+		&created.Puntuacion,
+		&created.Comentario,
+		&created.CreatedAt,
+	)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return nil, domain.ErrReviewAlreadyExists
+		}
+		return nil, fmt.Errorf("error creando reseña de ticket: %w", err)
+	}
+
+	return created, nil
+}
+
+// GetOperarioRating devuelve el promedio, total de reseñas y listado ordenado por created_at DESC.
+func (r *PostgresTicketRepository) GetOperarioRating(ctx context.Context, operarioID uuid.UUID) (*domain.OperarioRating, error) {
+	query := `
+		SELECT id, ticket_id, cliente_id, operario_id, puntuacion, comentario, created_at
+		FROM ticket_reviews
+		WHERE operario_id = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, operarioID)
+	if err != nil {
+		return nil, fmt.Errorf("error consultando reseñas del operario: %w", err)
+	}
+	defer rows.Close()
+
+	resenas := make([]domain.TicketReview, 0)
+	totalPuntos := 0
+
+	for rows.Next() {
+		var rev domain.TicketReview
+		if err := rows.Scan(
+			&rev.ID,
+			&rev.TicketID,
+			&rev.ClienteID,
+			&rev.OperarioID,
+			&rev.Puntuacion,
+			&rev.Comentario,
+			&rev.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("error escaneando reseña de operario: %w", err)
+		}
+		totalPuntos += rev.Puntuacion
+		resenas = append(resenas, rev)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterando reseñas del operario: %w", err)
+	}
+
+	promedio := 0.0
+	if len(resenas) > 0 {
+		promedio = math.Round((float64(totalPuntos)/float64(len(resenas)))*100) / 100
+	}
+
+	return &domain.OperarioRating{
+		Promedio:     promedio,
+		TotalResenas: len(resenas),
+		Resenas:      resenas,
+	}, nil
 }

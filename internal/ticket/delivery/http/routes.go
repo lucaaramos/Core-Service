@@ -57,4 +57,17 @@ func RegisterRoutes(router fiber.Router, handler *TicketHandler, jwtSecret strin
 		middleware.RequireRole(string(authDomain.RoleOperario)),
 		handler.FinishTicket,
 	)
+
+	// POST /tickets/:id/calificar -> reseña sobre ticket finalizado, exclusivo CLIENTE
+	tickets.Post("/:id/calificar",
+		middleware.RequireRole(string(authDomain.RoleCliente)),
+		handler.RateTicket,
+	)
+
+	// GET /operarios/me/rating -> reputación y reseñas recibidas, exclusivo OPERARIO
+	router.Get("/operarios/me/rating",
+		middleware.JWTProtected(jwtSecret),
+		middleware.RequireRole(string(authDomain.RoleOperario)),
+		handler.GetMyRating,
+	)
 }
