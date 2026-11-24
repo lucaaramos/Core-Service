@@ -42,7 +42,11 @@ const STATUS_CONFIG: Record<
 }
 
 export function StatusBadge({ status, className = '' }: StatusBadgeProps) {
-  const config = STATUS_CONFIG[status]
+  const config = STATUS_CONFIG[status] ?? {
+    label: status,
+    badgeClass: 'border-slate-700 bg-slate-800 text-slate-300',
+    dotClass: 'bg-slate-400',
+  }
 
   return (
     <span

@@ -16,6 +16,7 @@ import {
 import {
   cancelTicket,
   getTicketById,
+  getTicketHistory,
   getTickets,
   updateTicketState,
 } from '../api/tickets'
@@ -24,10 +25,13 @@ import { StarRating } from '../components/StarRating'
 import { StatusBadge } from '../components/StatusBadge'
 import type {
   OperarioNextState,
+  Role,
   Service,
   Ticket,
+  TicketHistoryEntry,
   TicketStatus,
 } from '../types/api'
+import { roleLabel } from '../utils/auth'
 import {
   formatCurrency,
   formatDate,
@@ -64,6 +68,12 @@ const KPI_CARD_STYLES: Record<TicketStatus, string> = {
   EN_PROGRESO: 'border-cyan-500/30 hover:border-cyan-400/60',
   FINALIZADO: 'border-emerald-500/30 hover:border-emerald-400/60',
   CANCELADO: 'border-rose-500/30 hover:border-rose-400/60',
+}
+
+const ROLE_CHIP_STYLES: Record<Role, string> = {
+  CLIENTE: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
+  OPERARIO: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  ADMIN: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
 }
 
 const STATUS_FILTERS: Array<{ value: StatusFilter; label: string }> = [
@@ -135,15 +145,21 @@ export function AdminDashboardPage() {
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  // Modal de detalle de ticket
+  // Modal de detalle de ticket + historial de auditoría
   const [detailTicketId, setDetailTicketId] = useState<string | null>(null)
   const [detailTicket, setDetailTicket] = useState<Ticket | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const detailReqIdRef = useRef(0)
 
+  const [ticketHistory, setTicketHistory] = useState<TicketHistoryEntry[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const historyReqIdRef = useRef(0)
+
   // Modal de confirmación de cancelación de ticket
   const [ticketToCancel, setTicketToCancel] = useState<Ticket | null>(null)
+  const [cancelMotivoInput, setCancelMotivoInput] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
 
@@ -266,30 +282,64 @@ export function AdminDashboardPage() {
     [],
   )
 
-  const loadTicketDetail = useCallback(async (id: string) => {
-    const requestId = ++detailReqIdRef.current
-    setDetailTicketId(id)
-    setDetailTicket(null)
-    setDetailLoading(true)
-    setDetailError(null)
+  const loadTicketHistory = useCallback(async (id: string) => {
+    const requestId = ++historyReqIdRef.current
+    setHistoryLoading(true)
+    setHistoryError(null)
 
     try {
-      const data = await getTicketById(id)
-      if (requestId === detailReqIdRef.current) {
-        setDetailTicket(data)
+      const data = await getTicketHistory(id)
+      if (requestId === historyReqIdRef.current) {
+        setTicketHistory(data)
       }
     } catch (err) {
-      if (requestId === detailReqIdRef.current) {
-        setDetailError(
-          extractErrorMessage(err, 'No se pudo obtener el detalle del ticket'),
+      if (requestId === historyReqIdRef.current) {
+        setHistoryError(
+          err instanceof Error
+            ? err.message
+            : 'No se pudo cargar el historial de estados',
         )
       }
     } finally {
-      if (requestId === detailReqIdRef.current) {
-        setDetailLoading(false)
+      if (requestId === historyReqIdRef.current) {
+        setHistoryLoading(false)
       }
     }
   }, [])
+
+  const loadTicketDetail = useCallback(
+    async (id: string) => {
+      const requestId = ++detailReqIdRef.current
+      setDetailTicketId(id)
+      setDetailTicket(null)
+      setDetailLoading(true)
+      setDetailError(null)
+      setTicketHistory([])
+
+      void loadTicketHistory(id)
+
+      try {
+        const data = await getTicketById(id)
+        if (requestId === detailReqIdRef.current) {
+          setDetailTicket(data)
+        }
+      } catch (err) {
+        if (requestId === detailReqIdRef.current) {
+          setDetailError(
+            extractErrorMessage(
+              err,
+              'No se pudo obtener el detalle del ticket',
+            ),
+          )
+        }
+      } finally {
+        if (requestId === detailReqIdRef.current) {
+          setDetailLoading(false)
+        }
+      }
+    },
+    [loadTicketHistory],
+  )
 
   // Carga inicial: catálogo de servicios + listado global de tickets
   useEffect(() => {
@@ -366,12 +416,16 @@ export function AdminDashboardPage() {
         setServiceModalError(null)
       } else if (ticketToCancel && !cancelling) {
         setTicketToCancel(null)
+        setCancelMotivoInput('')
         setCancelError(null)
       } else if (detailTicketId) {
         detailReqIdRef.current += 1
+        historyReqIdRef.current += 1
         setDetailTicketId(null)
         setDetailTicket(null)
         setDetailError(null)
+        setTicketHistory([])
+        setHistoryError(null)
       }
     }
 
@@ -417,6 +471,7 @@ export function AdminDashboardPage() {
   }
 
   function openCancelConfirm(ticket: Ticket) {
+    setCancelMotivoInput('')
     setCancelError(null)
     setTicketToCancel(ticket)
   }
@@ -424,6 +479,7 @@ export function AdminDashboardPage() {
   function closeCancelConfirm() {
     if (cancelling) return
     setTicketToCancel(null)
+    setCancelMotivoInput('')
     setCancelError(null)
   }
 
@@ -437,8 +493,9 @@ export function AdminDashboardPage() {
     setFeedbackMessage(null)
 
     try {
-      const res = await cancelTicket(targetId)
+      const res = await cancelTicket(targetId, cancelMotivoInput)
       setTicketToCancel(null)
+      setCancelMotivoInput('')
       setFeedbackMessage(res.message || 'Ticket cancelado exitosamente.')
       await loadTickets(statusFilter, true)
       if (detailTicketId === targetId) {
@@ -455,9 +512,12 @@ export function AdminDashboardPage() {
 
   function closeDetailModal() {
     detailReqIdRef.current += 1
+    historyReqIdRef.current += 1
     setDetailTicketId(null)
     setDetailTicket(null)
     setDetailError(null)
+    setTicketHistory([])
+    setHistoryError(null)
   }
 
   // --- Handlers ABM de Servicios ---
@@ -1788,6 +1848,102 @@ export function AdminDashboardPage() {
                     </div>
                   )}
 
+                {/* Línea de tiempo: Historial de estados */}
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Historial de estados
+                    </h4>
+                    {!historyLoading && !historyError && (
+                      <span className="text-xs text-slate-500">
+                        {ticketHistory.length}{' '}
+                        {ticketHistory.length === 1 ? 'evento' : 'eventos'}
+                      </span>
+                    )}
+                  </div>
+
+                  {historyLoading ? (
+                    <div className="mt-3 flex items-center gap-2.5 py-3 text-xs text-slate-400">
+                      <span
+                        aria-hidden
+                        className="h-4 w-4 animate-spin rounded-full border-2 border-slate-600 border-t-emerald-400"
+                      />
+                      Cargando línea de tiempo…
+                    </div>
+                  ) : historyError ? (
+                    <div
+                      role="alert"
+                      className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+                    >
+                      <span>{historyError}</span>
+                      <button
+                        type="button"
+                        onClick={() => void loadTicketHistory(detailTicket.id)}
+                        className="shrink-0 font-semibold text-rose-200 underline hover:text-white"
+                      >
+                        Reintentar
+                      </button>
+                    </div>
+                  ) : ticketHistory.length === 0 ? (
+                    <p className="mt-3 text-xs italic text-slate-500">
+                      Sin registros de auditoría para este ticket.
+                    </p>
+                  ) : (
+                    <ol className="relative mt-4 ml-2 space-y-4 border-l border-slate-800 pl-5">
+                      {ticketHistory.map((entry) => (
+                        <li key={entry.id} className="relative">
+                          <span
+                            aria-hidden
+                            className="absolute -left-[25px] top-1.5 h-2.5 w-2.5 rounded-full border border-emerald-400 bg-slate-950 ring-4 ring-slate-950"
+                          />
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                              {entry.estado_anterior ? (
+                                <StatusBadge status={entry.estado_anterior} />
+                              ) : (
+                                <span className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 text-xs font-medium text-slate-300">
+                                  Creación
+                                </span>
+                              )}
+                              <span aria-hidden className="text-slate-500">
+                                →
+                              </span>
+                              <StatusBadge status={entry.estado_nuevo} />
+                            </div>
+                            <span className="text-[11px] text-slate-500">
+                              {formatDate(entry.created_at)}
+                            </span>
+                          </div>
+
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                            <span>Por</span>
+                            <strong className="font-medium text-slate-200">
+                              {entry.usuario_nombre}
+                            </strong>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                                ROLE_CHIP_STYLES[entry.usuario_rol] ??
+                                'border-slate-700 bg-slate-900 text-slate-300'
+                              }`}
+                            >
+                              {roleLabel(entry.usuario_rol)}
+                            </span>
+                          </div>
+
+                          {entry.motivo && (
+                            <p className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-slate-300">
+                              <span className="font-semibold text-slate-400">
+                                Motivo:{' '}
+                              </span>
+                              {entry.motivo}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+
                 <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
                   {isCancellable(detailTicket.estado) && (
                     <button
@@ -1850,6 +2006,34 @@ export function AdminDashboardPage() {
                 {cancelError}
               </p>
             )}
+
+            <div className="mt-4">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label
+                  htmlFor="admin-cancel-motivo"
+                  className="text-xs font-medium text-slate-300"
+                >
+                  Motivo de cancelación{' '}
+                  <span className="font-normal text-slate-500">(opcional)</span>
+                </label>
+                <span className="text-xs text-slate-500">
+                  {cancelMotivoInput.length}/500
+                </span>
+              </div>
+              <textarea
+                id="admin-cancel-motivo"
+                rows={2}
+                maxLength={500}
+                disabled={cancelling}
+                value={cancelMotivoInput}
+                onChange={(event) => {
+                  setCancelMotivoInput(event.target.value)
+                  setCancelError(null)
+                }}
+                placeholder="Ej. Solicitud duplicada o cancelada a pedido del usuario…"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/30 disabled:opacity-60"
+              />
+            </div>
 
             <div className="mt-6 flex items-center justify-end gap-2.5">
               <button
